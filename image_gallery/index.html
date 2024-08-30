@@ -1,44 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Image Gallery</title>
   <style>
-    .image-container {
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #fafafa;
       display: flex;
-      flex-wrap: wrap;
+    }
+    .sidebar {
+      width: 200px;
+      background-color: #333;
+      color: white;
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
       justify-content: center;
     }
+    .sidebar h2 {
+      color: #f4f4f4;
+      margin-bottom: 20px;
+      text-align: center;
+      font-size: 24px;
+    }
+    .sidebar a {
+      text-decoration: none;
+      color: #bbb;
+      padding: 10px;
+      margin: 5px 0;
+      border-radius: 5px;
+      text-align: center;
+      display: block;
+      font-size: 18px;
+      transition: background 0.3s ease;
+    }
+    .sidebar a:hover {
+      background-color: #575757;
+      color: white;
+    }
+    .content {
+      margin-left: 220px;
+      padding: 20px;
+      width: calc(100% - 220px);
+    }
+    .section-title {
+      text-align: center;
+      margin: 40px 0 20px;
+      font-size: 28px;
+      color: #555;
+    }
+    .image-container {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+    }
     .image-container .image {
-      width: 800px;
-      margin: 10px;
+      width: 100%;
+      height: 300px; /* Set a consistent height */
+      overflow: hidden;
+      border-radius: 8px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+      transition: transform 0.2s ease-in-out;
+      background-color: white;
+      position: relative;
+      cursor: pointer;
     }
     .image-container .image img {
       width: 100%;
-      height: auto;
+      height: 100%;
+      object-fit: cover;
+      transition: transform 0.5s ease;
+    }
+    .image-container .image .caption {
+      position: absolute;
+      bottom: 0;
+      width: 100%;
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      text-align: center;
+      padding: 5px 0;
+      font-size: 16px;
     }
     .image-container .image h3 {
+      margin: 10px 0;
+      font-size: 18px;
+      color: #333;
       text-align: center;
     }
-    h1 {
+    .image-container .image:hover {
+      transform: scale(1.02);
+    }
+
+    /* Scroll animations */
+    .scroll-animation {
+      opacity: 0;
+      transform: translateY(50px);
+      transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+    }
+    .scroll-animation.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* Modal styles */
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+      background-color: rgba(0, 0, 0, 0.8);
+      justify-content: center;
+      align-items: center;
+    }
+    .modal-content {
+      position: relative;
+      max-width: 80%;
+      max-height: 80%;
+      overflow: auto;
+      background-color: #fff;
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .modal-content img {
+      width: 100%;
+      height: auto;
+    }
+    .modal-content .caption {
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
       text-align: center;
+      padding: 10px;
+      font-size: 18px;
+      margin-top: 10px;
+      border-radius: 5px;
+    }
+    .close {
+      position: absolute;
+      top: 10px;
+      right: 20px;
+      color: #333;
+      font-size: 30px;
+      font-weight: bold;
+      cursor: pointer;
     }
   </style>
 </head>
 <body>
-  <h1>Image Gallery</h1>
-  <div class="image-container">
-    <div class="image">
-      <h3>RECOMB-SEQ 2023 (ISTANBUL, TURKEY)</h3>
-      <img src="images/RECOMB_SEQ_2023.jpg" alt="RECOMB_SEQ_2023">
-    </div>
-    
-    <div class="image">
-      <h3>RECOMB 2023 (ISTANBUL, TURKEY)</h3>
-      <img src="images/RECOMB_2023.jpeg" alt="RECOMB_2023">
-    </div>
 
-    <div class="image">
-        <h3>IEEE Talk 2024 (BANGALORE, INDIA)</h3>
-        <img src="images/IEEE_talk.jpeg" alt="IEEE_talk">
+  <div class="sidebar">
+    <h2>Sections</h2>
+    <a href="#talks">Talks</a>
+    <a href="#poster">Poster</a>
+    <a href="#lab">Lab</a>
+    <a href="#friends">Friends</a>
+    <a href="#cycles">Cycles</a>
+    <a href="#random">Random</a>
+  </div>
+
+  <div class="content">
+    <h2 id="talks" class="section-title">Talks</h2>
+    <div class="image-container">
+      <div class="image scroll-animation">
+        <img src="images/RECOMB_2023.jpeg" alt="RECOMB 2023">
+        <div class="caption">RECOMB 2023 (ISTANBUL, TURKEY)</div>
       </div>
 
-    <!-- Add more image containers as needed -->
+      <div class="image scroll-animation">
+        <img src="images/IEEE_talk.jpeg" alt="IEEE Talk 2024">
+        <div class="caption">IEEE Talk 2024 (BANGALORE, INDIA)</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/RECOMB_24.jpeg" alt="RECOMB 2024">
+        <div class="caption">RECOMB 2024 (MIT, USA)</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/RECOMB-Seq_24_talk.jpeg" alt="RECOMB-SEQ 2024">
+        <div class="caption">RECOMB-SEQ 2024 (MIT, USA)</div>
+      </div>
+
+      <!-- Add more images for Talks as needed -->
+    </div>
+
+    <h2 id="poster" class="section-title">Poster</h2>
+    <div class="image-container">
+      <div class="image scroll-animation">
+        <img src="images/RECOMB_SEQ_2023.jpg" alt="RECOMB-SEQ 2023">
+        <div class="caption">RECOMB-SEQ 2023 (ISTANBUL, TURKEY)</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/RECOMB-Seq_24.jpg" alt="RECOMB-SEQ 2024">
+        <div class="caption">RECOMB-SEQ 2024 (MIT, USA)</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/HiPC_22.jpg" alt="HiPC 2022">
+        <div class="caption">HiPC 2022 (BANGALORE, INDIA)</div>
+      </div>
+      <!-- Add more images for Poster as needed -->
+    </div>
+
+    <h2 id="lab" class="section-title">Lab</h2>
+    <div class="image-container">
+      <div class="image scroll-animation">
+        <img src="images/lab_1.jpeg" alt="Lab Group Lunch 1">
+        <div class="caption">Lab Group Lunch 1</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/lab_2.jpg" alt="Lab Group Lunch 2">
+        <div class="caption">Lab Group Lunch 2</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/lab_3.jpg" alt="Lab Group Lunch 3">
+        <div class="caption">Lab Group Lunch 3</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/lab_4.jpg" alt="Lab Group Photo 1">
+        <div class="caption">Lab Group Photo 1</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/happy_interns.jpeg" alt="Happy Interns">
+        <div class="caption">Happy Interns</div>
+      </div>
+      <!-- Add more images for Lab as needed -->
+    </div>
+
+    <h2 id="friends" class="section-title">Friends</h2>
+    <div class="image-container">
+      <div class="image scroll-animation">
+        <img src="images/friends_1.jpg" alt="Friends 1">
+        <div class="caption">Friends 1</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/friends_2.JPG" alt="Friends 2">
+        <div class="caption">Friends 2</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/friends_3.jpg" alt="Friends 3">
+        <div class="caption">Friends 3</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/frineds_4.JPG" alt="Friends 4">
+        <div class="caption">Friends 4</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/friends_5.jpg" alt="Friends 5">
+        <div class="caption">Friends 5</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/friends_6.jpeg" alt="Friends 6">
+        <div class="caption">Friends 6</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/friends_7.jpg" alt="Friends 7">
+        <div class="caption">with Andrey and Dmitri</div>
+      </div>
+
+      <!-- Add more images for Friends as needed -->
+    </div>
+
+    <h2 id="cycles" class="section-title">Cycles</h2>
+    <div class="image-container">
+      <div class="image scroll-animation">
+        <img src="images/cycle_1.jpg" alt="BTwin Riverside 100">
+        <div class="caption">BTwin Riverside 100</div>
+      </div>
+      <div class="image scroll-animation">
+        <img src="images/cycle_2.jpg" alt="Firefox Meteor">
+        <div class="caption">Firefox Meteor</div>
+      </div>
+      <!-- Add more images for Cycles as needed -->
+    </div>
+
+    <h2 id="random" class="section-title">Random</h2>
+    <div class="image-container">
+
+      <div class="image scroll-animation">
+        <img src="images/Machine.jpg" alt="My Workstation">
+        <div class="caption">My Workstation</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/Boston_1.jpg" alt="Boston 1">
+        <div class="caption">Boston 1</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/Boston_2.jpg" alt="Boston 2">
+        <div class="caption">Boston 2</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/Istanbul_1.jpg" alt="Istanbul 1">
+        <div class="caption">Istanbul 1</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/Istanbul_2.jpg" alt="Istanbul 2">
+        <div class="caption">Istanbul 2</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/Mumbai_indigo.jpg" alt="Cloud over Mumbai">
+        <div class="caption">Cloud over Mumbai</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/shahara_t.jpg" alt="CRAY XC40">
+        <div class="caption">CRAY XC40</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/IISc.jpeg" alt="IISc">
+        <div class="caption">Main Building IISc</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/helix.jpg" alt="HELIX Cluster">
+        <div class="caption">Mounting Storage on HELIX Cluster ATCG Lab</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/random_bench.jpg" alt="Random bench">
+        <div class="caption">Random bench at LEPAKSHI INDIA</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/indepence.jpg" alt="Indepence Day 2022">
+        <div class="caption">Indepence Day 2022</div>
+      </div>
+
+      <div class="image scroll-animation">
+        <img src="images/jn_tata.jpg" alt="JN TATA Statue IISc">
+        <div class="caption">JN TATA Statue IISc</div>
+      </div>
+
+      <!-- Add more images for Random as needed -->
+    </div>
   </div>
+
+  <!-- Modal for enlarged image -->
+  <div id="modal" class="modal">
+    <span class="close">&times;</span>
+    <div class="modal-content">
+      <img id="modal-img" src="" alt="Enlarged image">
+      <div id="modal-caption" class="caption"></div>
+    </div>
+  </div>
+
+  <script>
+    // Scroll animation script
+    const scrollAnimations = document.querySelectorAll('.scroll-animation');
+
+    const scrollObserver = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    });
+
+    scrollAnimations.forEach(element => {
+      scrollObserver.observe(element);
+    });
+
+    // Smooth scroll for sidebar links
+    document.querySelectorAll('.sidebar a').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        document.querySelector(this.getAttribute('href')).scrollIntoView({
+          behavior: 'smooth'
+        });
+      });
+    });
+
+    // Modal functionality for click to enlarge
+    const modal = document.getElementById("modal");
+    const modalImg = document.getElementById("modal-img");
+    const modalCaption = document.getElementById("modal-caption");
+    const closeBtn = document.querySelector(".modal .close");
+
+    document.querySelectorAll('.image-container .image').forEach(image => {
+      image.addEventListener('click', function () {
+        const imgSrc = this.querySelector('img').src;
+        const imgAlt = this.querySelector('img').alt;
+        modal.style.display = "flex";
+        modalImg.src = imgSrc;
+        modalCaption.textContent = imgAlt;
+      });
+    });
+
+    closeBtn.addEventListener('click', function () {
+      modal.style.display = "none";
+    });
+
+    window.addEventListener('click', function (e) {
+      if (e.target === modal) {
+        modal.style.display = "none";
+      }
+    });
+  </script>
 </body>
 </html>
