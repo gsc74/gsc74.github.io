@@ -87,7 +87,8 @@
 <p>OpenMP can be combined with tiling to leverage multi-core processors. This approach assigns tiles to different threads, which can operate independently, thus improving performance on multi-threaded systems.</p>
 
 <h3>Code</h3>
-<pre><code>void parallel_tiled_multiplication(const std::vector&lt;int32_t&gt;& A, const std::vector&lt;int32_t&gt;& B, std::vector&lt;int32_t&gt;& C, int32_t m, int32_t n, int32_t tile_size) {
+<pre><code>#include &lt;omp.h&gt;  // Include for OpenMP
+void parallel_tiled_multiplication(const std::vector&lt;int32_t&gt;& A, const std::vector&lt;int32_t&gt;& B, std::vector&lt;int32_t&gt;& C, int32_t m, int32_t n, int32_t tile_size) {
     #pragma omp parallel for collapse(2) num_threads(NUM_THREADS)
     for (int32_t i = 0; i &lt; m; i += tile_size) {
         for (int32_t j = 0; j &lt; n; j += tile_size) {
@@ -134,11 +135,46 @@ void avx512_multiplication(const std::vector&lt;int32_t&gt;& A, const std::vecto
 }
 </code></pre>
 
-<h2>6. Parallel AVX-512 Tiled Multiplication</h2>
+<h2>6. AVX-512 SIMD Parallel Multiplication with OpenMP</h2>
+<p>AVX-512 is an Intel SIMD (Single Instruction, Multiple Data) extension that allows processing multiple data elements simultaneously. By using AVX-512 intrinsics, we can vectorize matrix multiplication, significantly improving performance.</p>
+
+<h3>Code</h3>
+<pre><code>#include &lt;immintrin.h&gt;  // Include for AVX512 intrinsics
+#include &lt;omp.h&gt;  // Include for OpenMP
+void avx512_par_multiplication(const std::vector<int32_t>& A, const std::vector<int32_t>& B, std::vector<int32_t>& C, int32_t m, int32_t n)
+{
+    #pragma omp parallel for collapse(2) num_threads(NUM_THREADS)
+    for (int32_t i = 0; i < m; i++) {
+        for (int32_t j = 0; j < n; j++) {
+            __m512i c = _mm512_setzero_si512();  // Accumulator for result
+            for (int32_t k = 0; k < n; k += 16) {
+                // Load 16 elements from row of A and column of B
+                __m512i a = _mm512_loadu_si512(&A[i * n + k]);
+                __m512i b = _mm512_loadu_si512(&B[k * n + j]);
+
+                // Multiply and accumulate into c
+                __m512i prod = _mm512_mullo_epi32(a, b);
+                c = _mm512_add_epi32(c, prod);
+            }
+            // Horizontal sum of the 16 integers in c
+            int32_t result[16];
+            _mm512_storeu_si512(result, c);
+            C[i * n + j] = 0;
+            for (int x = 0; x < 16; x++) {
+                C[i * n + j] += result[x];
+            }
+        }
+    }
+}
+</code></pre>
+
+<h2>7. Parallel AVX-512 Tiled Multiplication with OpenMP</h2>
 <p>This technique combines <strong>AVX-512</strong>, <strong>tiling</strong>, and <strong>OpenMP parallelization</strong>. By breaking down matrices into tiles and vectorizing operations within each tile, we maximize both data locality and parallelism.</p>
 
 <h3>Code</h3>
-<pre><code>void avx512_tiled_multiplication(const std::vector&lt;int32_t&gt;& A, const std::vector&lt;int32_t&gt;& B, std::vector&lt;int32_t&gt;& C, int32_t m, int32_t n, int32_t tile_size) {
+<pre><code>#include &lt;immintrin.h&gt;  // Include for AVX512 intrinsics
+#include &lt;omp.h&gt;  // Include for OpenMP
+void avx512_tiled_multiplication(const std::vector&lt;int32_t&gt;& A, const std::vector&lt;int32_t&gt;& B, std::vector&lt;int32_t&gt;& C, int32_t m, int32_t n, int32_t tile_size) {
     #pragma omp parallel for collapse(2) num_threads(NUM_THREADS)
     for (int32_t i = 0; i < m; i += tile_size) {
         for (int32_t j = 0; j < n; j += tile_size) {
