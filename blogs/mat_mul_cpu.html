@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Matrix Multiplication Optimization Techniques</title>
+<style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; margin: 20px; }
+    code, pre { background-color: #f4f4f4; padding: 2px 4px; font-size: 1em; }
+    pre { overflow-x: auto; padding: 10px; }
+    h1, h2, h3 { color: #333; }
+</style>
+</head>
+<body>
+
+<h1>Matrix Multiplication Optimization Techniques</h1>
+<p>Matrix multiplication is a fundamental operation in various computational fields, including computer graphics, machine learning, and scientific computing. Given matrices A (of size m &times; n) and B (of size n &times; p), the resulting matrix C = A &times; B has a size of m &times; p. The naive algorithm has a time complexity of O(n<sup>3</sup>), which can be slow for large matrices. This document explores various techniques to optimize matrix multiplication.</p>
+
+<h2>1. Naive Matrix Multiplication</h2>
+<p>The naive approach involves three nested loops, iterating over rows of A and columns of B, and computing the sum of products for each element in C. This approach, though straightforward, has poor cache locality and lacks optimization.</p>
+
+<h3>Code</h3>
+<pre><code>void naive_multiplication(const std::vector&lt;int32_t&gt;& A, const std::vector&lt;int32_t&gt;& B, std::vector&lt;int32_t&gt;& C, int32_t m, int32_t n) {
+    for (int32_t i = 0; i &lt; m; i++) {
+        for (int32_t j = 0; j &lt; n; j++) {
+            C[i * n + j] = 0;
+            for (int32_t k = 0; k &lt; n; k++) {
+                C[i * n + j] += A[i * n + k] * B[k * n + j];
+            }
+        }
+    }
+}
+</code></pre>
+
+<h2>2. Tiled Matrix Multiplication</h2>
+<p><strong>Tiling</strong> (also called blocking) improves cache locality by dividing the matrices into smaller blocks (or tiles) that fit into the cache. Processing tiles instead of the entire matrix reduces cache misses and improves memory access patterns.</p>
+
+<h3>Code</h3>
+<pre><code>void tiled_multiplication(const std::vector&lt;int32_t&gt;& A, const std::vector&lt;int32_t&gt;& B, std::vector&lt;int32_t&gt;& C, int32_t m, int32_t n, int32_t tile_size) {
+    for (int32_t i = 0; i &lt; m; i += tile_size) {
+        for (int32_t j = 0; j &lt; n; j += tile_size) {
+            for (int32_t k = 0; k &lt; n; k += tile_size) {
+                for (int32_t ii = i; ii &lt; std::min(i + tile_size, m); ii++) {
+                    for (int32_t jj = j; jj &lt; std::min(j + tile_size, n); jj++) {
+                        int32_t sum = 0;
+                        for (int32_t kk = k; kk &lt; std::min(k + tile_size, n); kk++) {
+                            sum += A[ii * n + kk] * B[kk * n + jj];
+                        }
+                        C[ii * n + jj] += sum;
+                    }
+                }
+            }
+        }
+    }
+}
+</code></pre>
+
+<h2>3. Loop Unrolling</h2>
+<p>Loop unrolling reduces loop overhead by manually unrolling the innermost loop, enabling the processor to execute instructions in parallel. This technique is effective for increasing instruction-level parallelism, but it doesn't improve cache locality.</p>
+
+<h3>Code</h3>
+<pre><code>void loop_unrolled_multiplication(const std::vector&lt;int32_t&gt;& A, const std::vector&lt;int32_t&gt;& B, std::vector&lt;int32_t&gt;& C, int32_t m, int32_t n) {
+    for (int32_t i = 0; i &lt; m; i++) {
+        for (int32_t j = 0; j &lt; n; j++) {
+            C[i * n + j] = 0;
+            int32_t k = 0;
+            for (; k &lt;= n - 8; k += 8) { // Unrolled by factor of 8
+                C[i * n + j] += A[i * n + k] * B[k * n + j];
+                C[i * n + j] += A[i * n + k + 1] * B[(k + 1) * n + j];
+                C[i * n + j] += A[i * n + k + 2] * B[(k + 2) * n + j];
+                C[i * n + j] += A[i * n + k + 3] * B[(k + 3) * n + j];
+                C[i * n + j] += A[i * n + k + 4] * B[(k + 4) * n + j];
+                C[i * n + j] += A[i * n + k + 5] * B[(k + 5) * n + j];
+                C[i * n + j] += A[i * n + k + 6] * B[(k + 6) * n + j];
+                C[i * n + j] += A[i * n + k + 7] * B[(k + 7) * n + j];
+            }
+            // Handle any remaining elements
+            for (; k &lt; n; k++) {
+                C[i * n + j] += A[i * n + k] * B[k * n + j];
+            }
+        }
+    }
+}
+</code></pre>
+
+<h2>4. Parallel Tiled Multiplication with OpenMP</h2>
+<p>OpenMP can be combined with tiling to leverage multi-core processors. This approach assigns tiles to different threads, which can operate independently, thus improving performance on multi-threaded systems.</p>
+
+<h3>Code</h3>
+<pre><code>void parallel_tiled_multiplication(const std::vector&lt;int32_t&gt;& A, const std::vector&lt;int32_t&gt;& B, std::vector&lt;int32_t&gt;& C, int32_t m, int32_t n, int32_t tile_size) {
+    #pragma omp parallel for collapse(2) num_threads(NUM_THREADS)
+    for (int32_t i = 0; i &lt; m; i += tile_size) {
+        for (int32_t j = 0; j &lt; n; j += tile_size) {
+            for (int32_t k = 0; k &lt; n; k += tile_size) {
+                for (int32_t ii = i; ii &lt; std::min(i + tile_size, m); ii++) {
+                    for (int32_t jj = j; jj &lt; std::min(j + tile_size, n); jj++) {
+                        int32_t sum = 0;
+                        for (int32_t kk = k; kk &lt; std::min(k + tile_size, n); kk++) {
+                            sum += A[ii * n + kk] * B[kk * n + jj];
+                        }
+                        #pragma omp atomic
+                        C[ii * n + jj] += sum;
+                    }
+                }
+            }
+        }
+    }
+}
+</code></pre>
+<h2>5. AVX-512 SIMD Multiplication</h2>
+<p>AVX-512 is an Intel SIMD (Single Instruction, Multiple Data) extension that allows processing multiple data elements simultaneously. By using AVX-512 intrinsics, we can vectorize matrix multiplication, significantly improving performance.</p>
+
+<h3>Code</h3>
+<pre><code>#include &lt;immintrin.h&gt;  // Include for AVX512 intrinsics
+
+void avx512_multiplication(const std::vector&lt;int32_t&gt;& A, const std::vector&lt;int32_t&gt;& B, std::vector&lt;int32_t&gt;& C, int32_t m, int32_t n) {
+    for (int32_t i = 0; i &lt; m; i++) {
+        for (int32_t j = 0; j &lt; n; j++) {
+            __m512i c = _mm512_setzero_si512();  // Accumulator for result
+            for (int32_t k = 0; k &lt; n; k += 16) {
+                __m512i a = _mm512_loadu_si512(&A[i * n + k]);
+                __m512i b = _mm512_loadu_si512(&B[k * n + j]);
+                __m512i prod = _mm512_mullo_epi32(a, b);
+                c = _mm512_add_epi32(c, prod);
+            }
+            int32_t result[16];
+            _mm512_storeu_si512(result, c);
+            C[i * n + j] = 0;
+            for (int x = 0; x &lt; 16; x++) {
+                C[i * n + j] += result[x];
+            }
+        }
+    }
+}
+</code></pre>
+
+<h2>6. Parallel AVX-512 Tiled Multiplication</h2>
+<p>This technique combines <strong>AVX-512</strong>, <strong>tiling</strong>, and <strong>OpenMP parallelization</strong>. By breaking down matrices into tiles and vectorizing operations within each tile, we maximize both data locality and parallelism.</p>
+
+<h3>Code</h3>
+<pre><code>void avx512_tiled_multiplication(const std::vector&lt;int32_t&gt;& A, const std::vector&lt;int32_t&gt;& B, std::vector&lt;int32_t&gt;& C, int32_t m, int32_t n, int32_t tile_size) {
+    #pragma omp parallel for collapse(2) num_threads(NUM_THREADS)
+    for (int32_t i = 0; i < m; i += tile_size) {
+        for (int32_t j = 0; j < n; j += tile_size) {
+            for (int32_t k = 0; k < n; k += tile_size) {  // Tile for the 'kk' dimension
+                for (int32_t ii = i; ii < std::min(i + tile_size, m); ii++) {
+                    for (int32_t jj = j; jj < std::min(j + tile_size, n); jj++) {
+                        __m512i c = _mm512_setzero_si512();  // Accumulate in 512-bit registers
+                        for (int32_t kk = k; kk < std::min(k + tile_size, n); kk += 16) {
+                            __m512i a = _mm512_loadu_si512(&A[ii * n + kk]);
+                            __m512i b = _mm512_loadu_si512(&B[kk * n + jj]);
+                            __m512i prod = _mm512_mullo_epi32(a, b);
+                            c = _mm512_add_epi32(c, prod);
+                        }
+                        int32_t result[16];
+                        _mm512_storeu_si512(result, c);
+                        if (k == 0) C[ii * n + jj] = 0;  // Initialize to zero only once
+                        for (int x = 0; x < 16; x++) {
+                            C[ii * n + jj] += result[x];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+</code></pre>
+
+<h2>Experimental Setup</h2>
+<p>For the following experiments, we used the following hardware and software configuration:</p>
+<ul>
+    <li>Optimization level: <code>-O3</code> compiler flag</li>
+    <li>Number of threads: <code>32</code></li>
+    <li>Matrix size: <code>2048 x 2048</code></li>
+    <li>CPU: <code>Intel(R) Xeon(R) Gold 6242R CPU @ 3.10GHz</code> with two sockets (20 cores per socket, totaling 40 cores)</li>
+</ul>
+
+<h2>Performance Comparison</h2>
+<p>The chart below shows the time taken by each matrix multiplication method under these experimental conditions.</p>
+<img src="matrix_multiplication_optimization_plot.png" alt="Performance comparsion of the different Multiplication Optimization Techniques" style="width:80%; margin-top:20px;">
+
+</body>
+</html>
