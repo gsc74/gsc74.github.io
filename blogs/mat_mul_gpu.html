@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Matrix Multiplication Performance on A100 GPU with 8192x8192 Matrix</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0 auto; max-width: 800px; padding: 20px; }
+        h1 { color: #333; }
+        h2 { color: #555; }
+        p, pre { color: #666; }
+        .code { background-color: #f4f4f4; padding: 10px; border-left: 3px solid #333; }
+        .plot { text-align: center; margin-top: 20px; }
+    </style>
+</head>
+<body>
+
+    <h1>Matrix Multiplication Performance on A100 GPU with 8192x8192 Matrix</h1>
+    
+    <p>In this post, we evaluate the performance of different matrix multiplication techniques on an NVIDIA A100 GPU using an 8192x8192 matrix. With the powerful Tensor Cores available on the A100, we explore how various implementations, including WMMA (Warp Matrix Multiply and Accumulate) for Tensor Core acceleration, handle this computationally intensive task.</p>
+    
+    <h2>Implementations</h2>
+    
+    <p>To better understand GPU optimization techniques, we implemented four matrix multiplication methods:</p>
+    
+    <h3>1. Naive GPU MatMul</h3>
+    <p>The naive implementation computes each element of the result matrix independently in each thread. This straightforward approach has no optimizations, so it requires multiple global memory accesses, resulting in longer runtime for large matrices.</p>
+    <div class="code">
+        <pre>
+// Naive GPU Matrix Multiplication
+__global__ void matMulNaive(const int* A, const int* B, int* C, int n) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < n && col < n) {
+        int sum = 0;
+        for (int k = 0; k < n; k++) {
+            sum += A[row * n + k] * B[k * n + col];
+        }
+        C[row * n + col] = sum;
+    }
+}
+        </pre>
+    </div>
+    
+    <h3>2. Shared Memory GPU MatMul</h3>
+    <p>In this approach, shared memory is used to store small submatrices of A and B, reducing global memory accesses and improving performance. By using shared memory, we achieve faster data access within each block.</p>
+    <div class="code">
+        <pre>
+// Shared Memory GPU Matrix Multiplication
+__global__ void matMulSharedMemory(const int* A, const int* B, int* C, int n) {
+    __shared__ int As[16][16];
+    __shared__ int Bs[16][16];
+    int row = blockIdx.y * 16 + threadIdx.y;
+    int col = blockIdx.x * 16 + threadIdx.x;
+    int sum = 0;
+    for (int i = 0; i < n / 16; i++) {
+        As[threadIdx.y][threadIdx.x] = A[row * n + i * 16 + threadIdx.x];
+        Bs[threadIdx.y][threadIdx.x] = B[(i * 16 + threadIdx.y) * n + col];
+        __syncthreads();
+        for (int k = 0; k < 16; k++) {
+            sum += As[threadIdx.y][k] * Bs[k][threadIdx.x];
+        }
+        __syncthreads();
+    }
+    C[row * n + col] = sum;
+}
+        </pre>
+    </div>
+    
+    <h3>3. Loop Unrolled GPU MatMul</h3>
+    <p>Loop unrolling further optimizes the shared memory implementation by reducing loop overhead, making this approach faster. This technique is particularly effective for smaller matrix sizes, where loop overhead is a significant factor.</p>
+    <div class="code">
+        <pre>
+// Loop Unrolled GPU Matrix Multiplication
+__global__ void matMulLoopUnroll(const int* A, const int* B, int* C, int n) {
+    __shared__ int As[16][16];
+    __shared__ int Bs[16][16];
+    int row = blockIdx.y * 16 + threadIdx.y;
+    int col = blockIdx.x * 16 + threadIdx.x;
+    int sum = 0;
+    for (int i = 0; i < n / 16; i++) {
+        As[threadIdx.y][threadIdx.x] = A[row * n + i * 16 + threadIdx.x];
+        Bs[threadIdx.y][threadIdx.x] = B[(i * 16 + threadIdx.y) * n + col];
+        __syncthreads();
+        #pragma unroll
+        for (int k = 0; k < 16; k++) {
+            sum += As[threadIdx.y][k] * Bs[k][threadIdx.x];
+        }
+        __syncthreads();
+    }
+    C[row * n + col] = sum;
+}
+        </pre>
+    </div>
+    
+    <h3>4. WMMA Tensor Core GPU MatMul</h3>
+    <p>The WMMA (Warp Matrix Multiply and Accumulate) API allows us to use Tensor Cores on the A100 for matrix multiplication. Tensor Cores are specialized hardware units optimized for 16x16 matrix operations in mixed precision (FP16 inputs with FP32 accumulation). However, due to tile size constraints and the large matrix size (8192x8192), this approach may not always outperform shared memory-based techniques.</p>
+    <div class="code">
+        <pre>
+// Tensor Core Matrix Multiplication using WMMA
+__global__ void matMulTensorCoreWMMA(const __half* A, const __half* B, float* C, int n) {
+    const int TILE_SIZE = 16;
+    int warpM = (blockIdx.y * blockDim.y + threadIdx.y) / TILE_SIZE;
+    int warpN = (blockIdx.x * blockDim.x + threadIdx.x) / TILE_SIZE;
+    fragment<matrix_a, TILE_SIZE, TILE_SIZE, TILE_SIZE, __half, row_major> a_frag;
+    fragment<matrix_b, TILE_SIZE, TILE_SIZE, TILE_SIZE, __half, col_major> b_frag;
+    fragment<accumulator, TILE_SIZE, TILE_SIZE, TILE_SIZE, float> c_frag;
+    fill_fragment(c_frag, 0.0f);
+    for (int i = 0; i < n / TILE_SIZE; i++) {
+        load_matrix_sync(a_frag, A + warpM * TILE_SIZE * n + i * TILE_SIZE, n);
+        load_matrix_sync(b_frag, B + i * TILE_SIZE * n + warpN * TILE_SIZE, n);
+        mma_sync(c_frag, a_frag, b_frag, c_frag);
+    }
+    store_matrix_sync(C + warpM * TILE_SIZE * n + warpN * TILE_SIZE, c_frag, n, mem_row_major);
+}
+        </pre>
+    </div>
+    
+    <h2>Results</h2>
+    
+    <h2>Performance Comparison Plot</h2>
+    
+    <p>The following plot summarizes the performance results, illustrating the differences in elapsed times for each method.</p>
+    
+    <div class="plot">
+        <img src="matrix_multiplication_performance_gpu.png" alt="Matrix Multiplication Performance on A100 GPU" width="600">
+    </div>
+    
+    <h2>Analysis</h2>
+    
+    <p>The results indicate that shared memory and loop unrolling offer the best performance for large matrix sizes. While Tensor Cores are highly effective for small or batched matrix operations typical in deep learning, they were less beneficial here due to the overhead associated with managing small tiles for a large 8192x8192 matrix.</p>
+    
+</body>
+</html>
