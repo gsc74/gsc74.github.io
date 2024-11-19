@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roofline Analysis: Matrix Multiplication</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            background: #f4f4f9;
+            color: #333;
+        }
+        header {
+            background: #35495e;
+            color: #fff;
+            padding: 1rem 0;
+            text-align: center;
+        }
+        .container {
+            max-width: 900px;
+            margin: 2rem auto;
+            padding: 1rem;
+            background: #fff;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            border-radius: 5px;
+        }
+        h1, h2, h3 {
+            color: #35495e;
+        }
+        img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 1rem auto;
+        }
+        pre {
+            background: #f4f4f9;
+            padding: 1rem;
+            border-left: 5px solid #35495e;
+            overflow-x: auto;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 2rem;
+            padding: 1rem 0;
+            background: #35495e;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Roofline Analysis of Matrix Multiplication</h1>
+    </header>
+    <div class="container">
+        <h2>Hardware Specification and Compute Hardware AI</h2>
+        <p>
+            The experiments were conducted on a dual-socket Intel Xeon Gold 6248R processor with the following specifications:
+        </p>
+        <ul>
+            <li><strong>Cores:</strong> 24 cores per socket, 48 cores in total.</li>
+            <li><strong>Base Frequency:</strong> 3.0 GHz.</li>
+            <li><strong>Peak Performance:</strong> 288 GOPS (32-bit integer operations).</li>
+            <li><strong>Memory Bandwidth:</strong> 281.4 GB/s (dual-socket).</li>
+        </ul>
+        <p>
+            The hardware Arithmetic Intensity (AI) is given by:
+            <br>
+            <code>Hardware AI = Compute Roof / Memory Bandwidth</code>
+        </p>
+        <p>
+            Substituting the values:
+            <br>
+            <code>Hardware AI = 288 GFLOPS / 281.4 GB/s ≈ 1.02 FLOPs/byte</code>
+        </p>
+
+        <h2>Problem Setup and Theoretical AI</h2>
+        <p>
+            The problem involves multiplying two square matrices of size $N = 8192$. Each element in the resulting matrix involves:
+        </p>
+        <ul>
+            <li>$N = 8192$ multiplications.</li>
+            <li>$N - 1 = 8191$ additions.</li>
+        </ul>
+        <p>
+            Total FLOPs for the operation:
+        </p>
+        <pre>
+FLOPs = 2 × N³ = 2 × 8192³ = 1.099 trillion FLOPs
+        </pre>
+        <p>
+            Bytes Transferred:
+        </p>
+        <pre>
+Matrix A: 8192 × 8192 × 4 bytes
+Matrix B: 8192 × 8192 × 4 bytes
+Matrix C: 8192 × 8192 × 4 bytes
+Total Bytes = 805 MB
+        </pre>
+        <p>
+            Theoretical AI is:
+            <br>
+            <code>Theoretical AI = FLOPs / Bytes Transferred = 1365.33 FLOPs/byte</code>
+        </p>
+
+        <h2>Naive Matrix Multiplication and Naive AI</h2>
+        <p>
+            The naive matrix multiplication uses three nested loops to compute each element sequentially:
+        </p>
+        <pre>
+for (int i = 0; i < N; i++) {
+    for (int j = 0; j < N; j++) {
+        int32_t sum = 0;
+        for (int k = 0; k < N; k++) {
+            sum += A[i * N + k] * B[k * N + j];
+        }
+        C[i * N + j] = sum;
+    }
+}
+        </pre>
+        <p>
+            The experimental AI for naive implementation is:
+            <br>
+            <code>Naive AI = 0.249985 FLOPs/byte</code>
+        </p>
+
+        <h2>SIMD Matrix Multiplication and SIMD AI</h2>
+        <p>
+            The SIMD implementation uses AVX-512 instructions, which can process 16 elements simultaneously. The inner loop is optimized as:
+        </p>
+        <pre>
+for (int k = 0; k < N; k += 16) {
+    __m512i a = _mm512_loadu_si512(&A[i * N + k]);
+    __m512i b = _mm512_loadu_si512(&B[k * N + j]);
+    __m512i prod = _mm512_mullo_epi32(a, b);
+    c = _mm512_add_epi32(c, prod);
+}
+        </pre>
+        <p>
+            Despite using SIMD, the AI remains the same as the naive implementation:
+            <br>
+            <code>SIMD AI = 0.249985 FLOPs/byte</code>
+        </p>
+
+        <h2>Why SIMD is Faster Despite Same AI</h2>
+        <p>
+            The SIMD implementation achieves better runtime because it efficiently utilizes available compute resources:
+        </p>
+        <ul>
+            <li><strong>Parallelism:</strong> AVX-512 processes 16 elements in parallel, reducing execution time significantly.</li>
+            <li><strong>Compute Efficiency:</strong> SIMD eliminates scalar operation overhead by leveraging vectorized instructions.</li>
+        </ul>
+        <p>
+            While both implementations are memory-bound, SIMD achieves better utilization of the available compute resources, resulting in a faster runtime.
+        </p>
+
+        <h2>Implications of Low Hardware AI and High Theoretical AI</h2>
+        <p>
+            The large gap between theoretical AI (1365.33) and hardware AI (1.02) highlights the imbalance in the problem:
+        </p>
+        <ul>
+            <li><strong>Compute-Heavy Problem:</strong> The problem structure demands significantly more computation than the hardware can support relative to its memory bandwidth.</li>
+            <li><strong>Memory-Bound Performance:</strong> Both naive and SIMD implementations achieve identical AI far below the theoretical value, indicating performance bottlenecks due to memory bandwidth.</li>
+        </ul>
+        <p>
+            The runtime difference (197.6 seconds for naive vs. 20.7 seconds for SIMD) demonstrates how vectorization can mitigate, but not eliminate, memory-bound limitations.
+        </p>
+
+        <h2>Experimental Results and Plot</h2>
+        <p>
+            The Roofline chart below illustrates the performance of the naive and SIMD implementations relative to the memory and compute roofs:
+        </p>
+        <img src="roofline.png" alt="Roofline Chart for INT32 Operations" />
+        <p>
+            Both implementations lie on the memory-bound side of the chart due to the low hardware AI, with SIMD achieving a significantly better runtime due to efficient compute utilization.
+        </p>
+    </div>
+    <footer class="footer">
+        <p>&copy; 2024 Roofline Analysis Blog</p>
+    </footer>
+</body>
+</html>
