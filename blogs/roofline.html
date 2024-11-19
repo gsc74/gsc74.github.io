@@ -101,16 +101,17 @@ FLOPs = 2 × N³ = 2 × 8192³ = 1.099 trillion FLOPs
             Bytes Transferred:
         </p>
         <pre>
-Matrix A: 8192 × 8192 × 4 bytes
-Matrix B: 8192 × 8192 × 4 bytes
-Matrix C: 8192 × 8192 × 4 bytes
-Total Bytes = 4.39 TB
+Matrix A: 8192 × 8192 × 4 bytes = 256 MB
+Matrix B: 8192 × 8192 × 4 bytes = 256 MB
+Matrix C: 8192 × 8192 × 4 bytes = 256 MB
+Total Bytes = 768 MB
         </pre>
         <p>
             Theoretical AI based on the problem:
             <br>
-            <code>Theoretical AI = FLOPs / Bytes Transferred = 1365.33 FLOPs/byte</code>
+            <code>Theoretical AI = FLOPs / Bytes Transferred = 1099511627776 / (768 × 1024 × 1024) ≈ 1365.33 FLOPs/byte</code>
         </p>
+
 
         <h2>Naive Matrix Multiplication</h2>
         <p>
