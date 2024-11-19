@@ -41,10 +41,13 @@
 
     <p>
         \[
-        D(0, j) = j \quad \text{for} \quad 0 \leq j \leq m
+        D(0, 0) = 0
         \]
         \[
         D(i, 0) = i \quad \text{for} \quad 0 \leq i \leq n
+        \]
+        \[
+        D(0, j) = j \quad \text{for} \quad 0 \leq j \leq m
         \]
     </p>
     <p>Where:</p>
@@ -54,21 +57,17 @@
     </ul>
 
     <h2>Recursion Relation</h2>
-    <p>The recursion relation for filling the DP table is expressed with cases as follows:</p>
+    <p>After initialization, the recursion relation for filling the DP table for \( i > 0 \) and \( j > 0 \) is as follows:</p>
 
     <p>
         \[
-        D(i, j) = 
-        \begin{cases}
-            0, & \text{if} \quad i = 0 \quad \text{and} \quad j = 0 \\
-            i, & \text{if} \quad j = 0 \\
-            j, & \text{if} \quad i = 0 \\
-            \min \left\{
-                D(i-1, j-1) + \text{cost}(seq1[i-1], seq2[j-1]), 
-                D(i-1, j) + 1, 
-                D(i, j-1) + 1
-            \right\}, & \text{otherwise}
-        \end{cases}
+        D(i, j) = \min \left\{
+        \begin{array}{ll}
+        D(i-1, j-1) + \text{cost}(seq1[i-1], seq2[j-1]), & \text{(Match/Mismatch)} \\
+        D(i-1, j) + 1, & \text{(Insertion in seq2)} \\
+        D(i, j-1) + 1, & \text{(Insertion in seq1)}
+        \end{array}
+        \right.
         \]
     </p>
 
