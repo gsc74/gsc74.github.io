@@ -11,13 +11,14 @@
             margin: 0;
             padding: 0;
             background: #f4f4f9;
-            color: #0b0b0b;
+            color: #333;
         }
         header {
-            background: #f1f2f4;
-            color: #ffffff;
+            background: #fff;
+            color: #333;
             padding: 1rem 0;
             text-align: center;
+            border-bottom: 2px solid #ccc;
         }
         .container {
             max-width: 900px;
@@ -56,7 +57,12 @@
         <h1>Roofline Analysis of Matrix Multiplication (INT32)</h1>
     </header>
     <div class="container">
-        <h2>Hardware Specification and Compute Hardware AI</h2>
+        <h2>Introduction</h2>
+        <p>
+            Roofline analysis is a visual model for evaluating the performance of computational workloads, particularly matrix multiplication. In this blog, we analyze the performance of naive and SIMD (Single Instruction Multiple Data) implementations of matrix multiplication for 32-bit integers (INT32) on a dual-socket Intel Xeon Gold 6248R processor.
+        </p>
+
+        <h2>Hardware Specifications and Compute Hardware AI</h2>
         <p>
             The experiments were conducted on a dual-socket Intel Xeon Gold 6248R processor with the following specifications:
         </p>
@@ -79,11 +85,11 @@
 
         <h2>Problem Setup and Theoretical AI</h2>
         <p>
-            The problem involves multiplying two square matrices of size $N = 8192$. Each element in the resulting matrix involves:
+            The problem involves multiplying two square matrices of size <code>N = 8192</code>. Each element in the resulting matrix involves:
         </p>
         <ul>
-            <li>$N = 8192$ multiplications.</li>
-            <li>$N - 1 = 8191$ additions.</li>
+            <li><strong>8192 multiplications</strong></li>
+            <li><strong>8191 additions</strong></li>
         </ul>
         <p>
             Total FLOPs for the operation:
@@ -101,14 +107,14 @@ Matrix C: 8192 × 8192 × 4 bytes
 Total Bytes = 4.39 TB
         </pre>
         <p>
-            Theoretical AI is:
+            Theoretical AI based on the problem:
             <br>
             <code>Theoretical AI = FLOPs / Bytes Transferred = 1365.33 FLOPs/byte</code>
         </p>
 
-        <h2>Naive Matrix Multiplication and Naive AI</h2>
+        <h2>Naive Matrix Multiplication</h2>
         <p>
-            The naive matrix multiplication uses three nested loops to compute each element sequentially:
+            The naive implementation uses three nested loops:
         </p>
         <pre>
 for (int i = 0; i < N; i++) {
@@ -122,16 +128,16 @@ for (int i = 0; i < N; i++) {
 }
         </pre>
         <p>
-            The naive implementation achieves:
+            Performance metrics for the naive implementation:
             <br>
             <code>Naive GFLOPS/sec = 5.7 GFLOPS</code>
             <br>
             <code>Naive AI = 0.249985 FLOPs/byte</code>
         </p>
 
-        <h2>SIMD Matrix Multiplication and SIMD AI</h2>
+        <h2>SIMD Matrix Multiplication</h2>
         <p>
-            The SIMD implementation uses AVX-512 instructions, which can process 16 elements simultaneously. The inner loop is optimized as:
+            The SIMD implementation leverages AVX-512 to process 16 elements simultaneously:
         </p>
         <pre>
 for (int k = 0; k < N; k += 16) {
@@ -142,7 +148,7 @@ for (int k = 0; k < N; k += 16) {
 }
         </pre>
         <p>
-            The SIMD implementation achieves:
+            Performance metrics for the SIMD implementation:
             <br>
             <code>SIMD GFLOPS/sec = 45.6 GFLOPS</code>
             <br>
@@ -151,23 +157,21 @@ for (int k = 0; k < N; k += 16) {
 
         <h2>Why SIMD is Faster Despite Same AI</h2>
         <p>
-            The SIMD implementation achieves better runtime because it efficiently utilizes available compute resources:
+            Both naive and SIMD implementations have the same Arithmetic Intensity (AI) of 0.249985 FLOPs/byte. This is because the amount of computation (FLOPs) and memory transfers (bytes) are identical in both cases. However, SIMD achieves significantly better performance in GFLOPS/sec due to its ability to utilize compute resources more efficiently:
         </p>
         <ul>
-            <li><strong>Parallelism:</strong> AVX-512 processes 16 elements in parallel, reducing execution time significantly.</li>
-            <li><strong>Compute Efficiency:</strong> SIMD eliminates scalar operation overhead by leveraging vectorized instructions.</li>
+            <li><strong>Parallelism:</strong> SIMD leverages AVX-512 vector instructions, which can perform 16 operations per cycle, compared to scalar instructions in the naive implementation.</li>
+            <li><strong>Reduced Compute Bottlenecks:</strong> By executing multiple operations in a single instruction, SIMD minimizes the time spent on computation, resulting in faster runtimes.</li>
+            <li><strong>Compute Efficiency:</strong> SIMD achieves higher throughput within the same memory bandwidth constraints, leading to improved performance.</li>
         </ul>
-        <p>
-            While both implementations are memory-bound, SIMD achieves better utilization of the available compute resources, resulting in a faster runtime.
-        </p>
 
         <h2>Experimental Results and Plot</h2>
         <p>
-            The Roofline chart below illustrates the performance of the naive and SIMD implementations relative to the memory and compute roofs:
+            The Roofline chart below illustrates the performance of naive and SIMD implementations relative to the memory and compute roofs:
         </p>
-        <img src="roofline.png" alt="Updated Roofline Chart for INT32 Operations" />
+        <img src="roofline.png" alt="Roofline Chart for INT32 Operations" />
         <p>
-            Both implementations lie on the memory-bound side of the chart due to the low hardware AI, with SIMD achieving a significantly better runtime due to efficient compute utilization.
+            Both implementations are memory-bound due to the low experimental AI (0.249985 FLOPs/byte compared to the hardware AI of 1.02 FLOPs/byte). However, SIMD achieves a significantly better runtime by efficiently utilizing the available compute resources.
         </p>
     </div>
     <footer class="footer">
