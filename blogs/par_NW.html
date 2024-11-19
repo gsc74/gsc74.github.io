@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Parallel Needleman-Wunsch Algorithm</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0 auto; max-width: 800px; padding: 20px; }
+        h1 { color: #333; }
+        h2 { color: #555; }
+        h3 { color: #444; }
+        p, pre { color: #666; }
+        .code { background-color: #f4f4f4; padding: 10px; border-left: 3px solid #333; }
+        .plot { text-align: center; margin-top: 20px; }
+    </style>
+</head>
+<body>
+
+    <h1>Parallelization of the Needleman-Wunsch Algorithm</h1>
+
+    <p>The Needleman-Wunsch algorithm is a well-known dynamic programming (DP) algorithm used for global sequence alignment. As sequence length increases, the computation time increases significantly. In this blog, we explore the parallelization of this algorithm using anti-diagonal processing, explain its performance, and compare it with the naive approach.</p>
+
+    <h2>Naive vs Parallel Approach</h2>
+
+    <p>The naive approach to the Needleman-Wunsch algorithm computes the DP table row by row, where each cell is computed sequentially based on the previous one. This approach is simple but very slow for large sequences due to the large number of computations needed and its sequential nature.</p>
+
+    <p>On the other hand, the parallel approach breaks the task into independent computations of anti-diagonals. Anti-diagonals are computed in parallel, allowing the workload to be distributed across multiple threads. This significantly reduces runtime for large sequences, though some load imbalance may still occur due to the varying sizes of anti-diagonals.</p>
+
+    <h2>What is k?</h2>
+    <p>In the Needleman-Wunsch algorithm, the DP table is computed diagonally, meaning we fill the table along anti-diagonals. Each anti-diagonal corresponds to all pairs of indices (i, j) such that:</p>
+    <pre>
+        i + j = k
+    </pre>
+    <p>Here, k represents the index of the anti-diagonal, and it determines the pairs of indices (i, j) that belong to the same diagonal. The value of k ranges from 1 to n + m, where n is the length of the first sequence and m is the length of the second sequence.</p>
+
+    <p>The reason we use anti-diagonals is that they represent independent computations. Each element in an anti-diagonal only depends on values from previous anti-diagonals (those with smaller values of k). Therefore, each element can be computed independently, making it ideal for parallel processing.</p>
+
+    <h3>Code: Naive Needleman-Wunsch</h3>
+    <pre>
+        // Naive Needleman-Wunsch with 2D DP table
+        int computeEditDistance2D_naive(const string& seq1, const string& seq2) {
+            int n = seq1.size();
+            int m = seq2.size();
+
+            // 2D DP table
+            vector<vector<int>> dp(n + 1, vector<int>(m + 1, 0));
+
+            // Initialize base cases
+            for (int i = 0; i <= n; ++i) dp[i][0] = i;
+            for (int j = 0; j <= m; ++j) dp[0][j] = j;
+
+            // Fill the DP table row by row
+            for (int i = 1; i <= n; ++i) {
+                for (int j = 1; j <= m; ++j) {
+                    int match_cost = dp[i - 1][j - 1] + cost(seq1[i - 1], seq2[j - 1]);
+                    int gap_seq1 = dp[i - 1][j] + 1; // Gap in seq2
+                    int gap_seq2 = dp[i][j - 1] + 1; // Gap in seq1
+                    dp[i][j] = min(match_cost, min(gap_seq1, gap_seq2));
+                }
+            }
+
+            // Return the edit distance (bottom-right corner)
+            return dp[n][m];
+        }
+    </pre>
+
+    <h3>Code: Parallel Needleman-Wunsch</h3>
+    <pre>
+        // Parallel Needleman-Wunsch with 2D DP table and anti-diagonal strategy
+        int computeEditDistance2D_parallel(const string& seq1, const string& seq2, int num_threads) {
+            int n = seq1.size();
+            int m = seq2.size();
+
+            // 2D DP table
+            vector<vector<int>> dp(n + 1, vector<int>(m + 1, 0));
+
+            // Initialize base cases
+            #pragma omp parallel for schedule(static) num_threads(num_threads)
+            for (int i = 0; i <= n; ++i) dp[i][0] = i;
+            #pragma omp parallel for schedule(static) num_threads(num_threads)
+            for (int j = 0; j <= m; ++j) dp[0][j] = j;
+
+            // Process each anti-diagonal
+            for (int k = 1; k <= n + m - 1; ++k) {
+                #pragma omp parallel for num_threads(num_threads) schedule(dynamic)
+                for (int i = max(1, k - m + 1); i <= min(k, n); ++i) {
+                    int j = k - i + 1;
+                    if (j > 0 && j <= m) {
+                        // Prefetching to avoid memory latency
+                        __builtin_prefetch(&dp[i - 1][j - 1], 0, 1);
+                        __builtin_prefetch(&dp[i - 1][j], 0, 1);
+                        __builtin_prefetch(&dp[i][j - 1], 0, 1);
+
+                        // Compute DP value
+                        int match_cost = dp[i - 1][j - 1] + cost(seq1[i - 1], seq2[j - 1]);
+                        int gap_seq1 = dp[i - 1][j] + 1; // Gap in seq2
+                        int gap_seq2 = dp[i][j - 1] + 1; // Gap in seq1
+                        dp[i][j] = min(match_cost, min(gap_seq1, gap_seq2));
+                    }
+                }
+            }
+
+            // Return the edit distance (bottom-right corner)
+            return dp[n][m];
+        }
+    </pre>
+
+    <h2>Results</h2>
+    <p>The following results were obtained when running the Needleman-Wunsch algorithm on random sequences of length 40,000:</p>
+    <ul>
+        <li><strong>Naive Edit Distance:</strong> 20,697</li>
+        <li><strong>Parallel Edit Distance:</strong> 20,697 (same result as naive)</li>
+        <li><strong>Naive Runtime:</strong> 3038 ms</li>
+        <li><strong>Parallel Runtime:</strong> 2196 ms</li>
+    </ul>
+
+    <h2>Performance Comparison Plot</h2>
+    <p>The following plot summarizes the performance results, illustrating the differences in elapsed times for each method.</p>
+
+    <div class="plot">
+        <img src="rt_NW.png" alt="Naive vs Parallel Runtime Comparison">
+    </div>
+
+    <h2>Analysis</h2>
+    <p>The results indicate that the parallelized Needleman-Wunsch algorithm using OpenMP significantly reduces runtime, making it more efficient for large sequences. However, load imbalance due to the varying size of anti-diagonals still presents a challenge. Dynamic scheduling and effective workload balancing are essential for further optimization.</p>
+
+</body>
+</html>
