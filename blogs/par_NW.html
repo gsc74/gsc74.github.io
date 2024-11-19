@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Parallel Needleman-Wunsch Algorithm</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/MathJax.js?config=TeX-MML-AM_CHTML"></script>
     <style>
         body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0 auto; max-width: 800px; padding: 20px; }
         h1 { color: #333; }
@@ -34,6 +35,49 @@
     <p>Here, k represents the index of the anti-diagonal, and it determines the pairs of indices (i, j) that belong to the same diagonal. The value of k ranges from 1 to n + m, where n is the length of the first sequence and m is the length of the second sequence.</p>
 
     <p>The reason we use anti-diagonals is that they represent independent computations. Each element in an anti-diagonal only depends on values from previous anti-diagonals (those with smaller values of k). Therefore, each element can be computed independently, making it ideal for parallel processing.</p>
+
+    <h2>Initialization</h2>
+    <p>The initialization steps for the Needleman-Wunsch algorithm are as follows:</p>
+
+    <p>
+        \[
+        D(0, j) = j \quad \text{for} \quad 0 \leq j \leq m
+        \]
+        \[
+        D(i, 0) = i \quad \text{for} \quad 0 \leq i \leq n
+        \]
+    </p>
+    <p>Where:</p>
+    <ul>
+        <li><strong>D(i, j):</strong> The DP table element at row i and column j representing the minimum edit distance between the first i characters of sequence 1 and the first j characters of sequence 2.</li>
+        <li><strong>i, j:</strong> Indices corresponding to the current position in the two sequences being aligned.</li>
+    </ul>
+
+    <h2>Recursion Relation</h2>
+    <p>The recursion relation for filling the DP table is expressed with cases as follows:</p>
+
+    <p>
+        \[
+        D(i, j) = 
+        \begin{cases}
+            0, & \text{if} \quad i = 0 \quad \text{and} \quad j = 0 \\
+            i, & \text{if} \quad j = 0 \\
+            j, & \text{if} \quad i = 0 \\
+            \min \left\{
+                D(i-1, j-1) + \text{cost}(seq1[i-1], seq2[j-1]), 
+                D(i-1, j) + 1, 
+                D(i, j-1) + 1
+            \right\}, & \text{otherwise}
+        \end{cases}
+        \]
+    </p>
+
+    <p>Where:</p>
+    <ul>
+        <li><strong>D(i, j):</strong> The minimum edit distance between the first i characters of sequence 1 and the first j characters of sequence 2.</li>
+        <li><strong>cost(seq1[i-1], seq2[j-1]):</strong> The cost of aligning the characters at positions i-1 and j-1 of the sequences. Typically 0 if the characters match, or 1 if they mismatch.</li>
+        <li><strong>+1:</strong> The penalty for introducing a gap (either in sequence 1 or sequence 2).</li>
+    </ul>
 
     <h3>Code: Naive Needleman-Wunsch</h3>
     <pre>
