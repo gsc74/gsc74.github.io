@@ -11,11 +11,11 @@
             margin: 0;
             padding: 0;
             background: #f4f4f9;
-            color: #333;
+            color: #0b0b0b;
         }
         header {
-            background: #35495e;
-            color: #fff;
+            background: #f1f2f4;
+            color: #ffffff;
             padding: 1rem 0;
             text-align: center;
         }
@@ -53,7 +53,7 @@
 </head>
 <body>
     <header>
-        <h1>Roofline Analysis of Matrix Multiplication</h1>
+        <h1>Roofline Analysis of Matrix Multiplication (INT32)</h1>
     </header>
     <div class="container">
         <h2>Hardware Specification and Compute Hardware AI</h2>
@@ -63,7 +63,7 @@
         <ul>
             <li><strong>Cores:</strong> 24 cores per socket, 48 cores in total.</li>
             <li><strong>Base Frequency:</strong> 3.0 GHz.</li>
-            <li><strong>Peak Performance:</strong> 288 GOPS (32-bit integer operations).</li>
+            <li><strong>Peak Performance:</strong> 288 GFLOPS (32-bit integer operations).</li>
             <li><strong>Memory Bandwidth:</strong> 281.4 GB/s (dual-socket).</li>
         </ul>
         <p>
@@ -82,8 +82,8 @@
             The problem involves multiplying two square matrices of size $N = 8192$. Each element in the resulting matrix involves:
         </p>
         <ul>
-            <li>N = 8192 multiplications.</li>
-            <li>N - 1 = 8191 additions.</li>
+            <li>$N = 8192$ multiplications.</li>
+            <li>$N - 1 = 8191$ additions.</li>
         </ul>
         <p>
             Total FLOPs for the operation:
@@ -98,7 +98,7 @@ FLOPs = 2 × N³ = 2 × 8192³ = 1.099 trillion FLOPs
 Matrix A: 8192 × 8192 × 4 bytes
 Matrix B: 8192 × 8192 × 4 bytes
 Matrix C: 8192 × 8192 × 4 bytes
-Total Bytes = 805 MB
+Total Bytes = 4.39 TB
         </pre>
         <p>
             Theoretical AI is:
@@ -122,7 +122,9 @@ for (int i = 0; i < N; i++) {
 }
         </pre>
         <p>
-            The experimental AI for naive implementation is:
+            The naive implementation achieves:
+            <br>
+            <code>Naive GFLOPS/sec = 5.7 GFLOPS</code>
             <br>
             <code>Naive AI = 0.249985 FLOPs/byte</code>
         </p>
@@ -140,7 +142,9 @@ for (int k = 0; k < N; k += 16) {
 }
         </pre>
         <p>
-            Despite using SIMD, the AI remains the same as the naive implementation:
+            The SIMD implementation achieves:
+            <br>
+            <code>SIMD GFLOPS/sec = 45.6 GFLOPS</code>
             <br>
             <code>SIMD AI = 0.249985 FLOPs/byte</code>
         </p>
@@ -157,23 +161,11 @@ for (int k = 0; k < N; k += 16) {
             While both implementations are memory-bound, SIMD achieves better utilization of the available compute resources, resulting in a faster runtime.
         </p>
 
-        <h2>Implications of Low Hardware AI and High Theoretical AI</h2>
-        <p>
-            The large gap between theoretical AI (1365.33) and hardware AI (1.02) highlights the imbalance in the problem:
-        </p>
-        <ul>
-            <li><strong>Compute-Heavy Problem:</strong> The problem structure demands significantly more computation than the hardware can support relative to its memory bandwidth.</li>
-            <li><strong>Memory-Bound Performance:</strong> Both naive and SIMD implementations achieve identical AI far below the theoretical value, indicating performance bottlenecks due to memory bandwidth.</li>
-        </ul>
-        <p>
-            The runtime difference (197.6 seconds for naive vs. 20.7 seconds for SIMD) demonstrates how vectorization can mitigate, but not eliminate, memory-bound limitations.
-        </p>
-
         <h2>Experimental Results and Plot</h2>
         <p>
             The Roofline chart below illustrates the performance of the naive and SIMD implementations relative to the memory and compute roofs:
         </p>
-        <img src="roofline.png" alt="Roofline Chart for INT32 Operations" />
+        <img src="roofline.png" alt="Updated Roofline Chart for INT32 Operations" />
         <p>
             Both implementations lie on the memory-bound side of the chart due to the low hardware AI, with SIMD achieving a significantly better runtime due to efficient compute utilization.
         </p>
