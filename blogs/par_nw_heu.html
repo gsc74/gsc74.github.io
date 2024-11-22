@@ -42,13 +42,27 @@ The Needleman-Wunsch algorithm is a dynamic programming technique used for globa
 
 <h2>2. Recursive Formulation</h2>
 
+<p>The initialization steps for the Needleman-Wunsch algorithm (semi-global alignment) are as follows:</p>
+
+<p>
+    \[
+    C(0, 0) = 0
+    \]
+    \[
+    C(i, 0) = i \quad \text{for} \quad 0 \leq i \leq n
+    \]
+    \[
+    C(0, j) = 0 \quad \text{for} \quad 0 \leq j \leq m
+    \]
+</p>
+
 The core of the Needleman-Wunsch algorithm relies on the following recursive relation:
 
 $$
 C(i, j) = \max \begin{cases}
 C(i-1, j-1) + \text{match-score}(i, j), \\\\
-C(i-1, j) + \text{gap-penalty}, \\\\
-C(i, j-1) + \text{gap-penalty}
+C(i-1, j) + \text{deletion-penalty}, \\\\
+C(i, j-1) + \text{insertion-penalty}
 \end{cases}
 $$
 
@@ -57,7 +71,7 @@ Where:
 <ul>
     <li>\( C(i, j) \) is the optimal score up to position \( i \) in sequence \( A \) and position \( j \) in sequence \( B \).</li>
     <li>\( \text{match-score}(i, j) \) is the score for aligning \( A_i \) with \( B_j \) (usually +1 for a match, -1 for a mismatch).</li>
-    <li>\( \text{gap-penalty} \) is the penalty for introducing a gap (usually negative).</li>
+    <li>\( \text{deletion-penalty} \) and \( \text{insertion-penalty} \) are the penalty for introducing a gap (usually negative).</li>
 </ul>
 
 <h2>3. Heuristic for Parallel Needleman-Wunsch</h2>
