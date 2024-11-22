@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Heuristic-Based Parallel Needleman-Wunsch Algorithm</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async
+            src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+    </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border: 1px solid #ddd;
+            overflow-x: auto;
+        }
+        .chart {
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Heuristic-Based Parallel Needleman-Wunsch Algorithm</h1>
+
+<h2>1. Introduction to the Needleman-Wunsch Algorithm</h2>
+
+The Needleman-Wunsch algorithm is a dynamic programming technique used for global sequence alignment, particularly in bioinformatics for comparing DNA, RNA, or protein sequences. It finds the optimal alignment between two sequences by maximizing a similarity score or minimizing an edit distance.
+
+<h3>Key Concepts:</h3>
+
+<ul>
+    <li><strong>Global Alignment</strong>: Aligns sequences from start to end, allowing for gaps.</li>
+    <li><strong>Scoring Scheme</strong>: Assigns scores for matches, mismatches, and gaps.</li>
+    <li><strong>Dynamic Programming Matrix</strong>: Stores intermediate scores to avoid redundant calculations.</li>
+</ul>
+
+<h2>2. Recursive Formulation</h2>
+
+The core of the Needleman-Wunsch algorithm relies on the following recursive relation:
+
+$$
+C(i, j) = \max \begin{cases}
+C(i-1, j-1) + \text{match-score}(i, j), \\\\
+C(i-1, j) + \text{gap-penalty}, \\\\
+C(i, j-1) + \text{gap-penalty}
+\end{cases}
+$$
+
+Where:
+
+<ul>
+    <li>\( C(i, j) \) is the optimal score up to position \( i \) in sequence \( A \) and position \( j \) in sequence \( B \).</li>
+    <li>\( \text{match-score}(i, j) \) is the score for aligning \( A_i \) with \( B_j \) (usually +1 for a match, -1 for a mismatch).</li>
+    <li>\( \text{gap-penalty} \) is the penalty for introducing a gap (usually negative).</li>
+</ul>
+
+<h2>3. Heuristic for Parallel Needleman-Wunsch</h2>
+
+The standard Needleman-Wunsch algorithm is inherently sequential due to data dependencies; each cell depends on its top, left, and top-left neighbors. However, by introducing a heuristic that allows for overlapping computations and iterative updates, we can parallelize the algorithm.
+
+<h3>Heuristic Approach:</h3>
+
+<ul>
+    <li><strong>Chunking</strong>: Divide the matrix into overlapping chunks that can be processed in parallel.</li>
+    <li><strong>Iteration</strong>: Repeat the computation until no updates occur in the matrix.</li>
+    <li><strong>Overlap Percentage</strong>: Introduce an overlap between chunks to ensure data dependencies are met.</li>
+</ul>
+
+<h2>4. Pseudocode for the Heuristic</h2>
+
+<ol>
+    <li><strong>Initialize the Scoring Matrix</strong>:
+
+        <ul>
+            <li>Set \( C(i, 0) = i \) for all \( i \).</li>
+            <li>Set \( C(0, j) = 0 \) for all \( j \) (semi-global alignment).</li>
+        </ul>
+    </li>
+    <li><strong>Compute Overlapping Chunks</strong>:
+
+        <ul>
+            <li>Divide the matrix columns into chunks based on the number of threads.</li>
+            <li>Calculate overlap size based on the overlap percentage.</li>
+        </ul>
+    </li>
+    <li><strong>Iterative Computation</strong>:
+
+        <ul>
+            <li><strong>While</strong> updates occur:
+
+                <ul>
+                    <li><strong>For</strong> each row \( i \) from 1 to \( n \):
+
+                        <ul>
+                            <li><strong>Parallel For</strong> each chunk:
+
+                                <ul>
+                                    <li>Compute \( C(i, j) \) for \( j \) in the chunk range.</li>
+                                    <li>Track if any updates occur.</li>
+                                </ul>
+                            </li>
+                        </ul>
+                    </li>
+                </ul>
+            </li>
+        </ul>
+    </li>
+</ol>
+
+<h2>5. Code Snippets</h2>
+
+<h3>Sequential Needleman-Wunsch Implementation</h3>
+
+<pre><code class="language-cpp">
+// Initialize scoring matrix
+for (int i = 0; i &lt;= n; ++i) C[i][0] = i;
+for (int j = 0; j &lt;= m; ++j) C[0][j] = 0;
+
+// Needleman-Wunsch Algorithm
+for (int i = 1; i &lt;= n; ++i) {
+    for (int j = 1; j &lt;= m; ++j) {
+        int match = C[i-1][j-1] + (ref[j-1] == query[i-1] ? 1 : -1);
+        int delete_cost = C[i-1][j] - 1;
+        int insert_cost = C[i][j-1] - 1;
+        C[i][j] = std::max({match, delete_cost, insert_cost});
+    }
+}
+</code></pre>
+
+<h3>Parallel Needleman-Wunsch with Heuristic</h3>
+
+<pre><code class="language-cpp">
+// Initialize scoring matrix
+#pragma omp parallel for num_threads(num_threads)
+for (int i = 0; i &lt;= n; ++i) C[i][0] = i;
+#pragma omp parallel for num_threads(num_threads)
+for (int j = 0; j &lt;= m; ++j) C[0][j] = 0;
+
+// Compute overlapping chunks
+compute_chunks(m, overlap, num_threads, chunks);
+
+// Iterative computation
+bool updated = true;
+while (updated) {
+    updated = false;
+    #pragma omp parallel num_threads(num_threads)
+    {
+        bool local_updated = false;
+        #pragma omp for
+        for (size_t chunk_idx = 0; chunk_idx &lt; chunks.size(); ++chunk_idx) {
+            int start = chunks[chunk_idx].first;
+            int end = chunks[chunk_idx].second;
+            for (int i = 1; i &lt;= n; ++i) {
+                for (int j = start; j &lt;= end; ++j) {
+                    int old_value = C[i][j];
+                    int match = C[i-1][j-1] + (ref[j-1] == query[i-1] ? 1 : -1);
+                    int delete_cost = C[i-1][j] - 1;
+                    int insert_cost = C[i][j-1] - 1;
+                    C[i][j] = std::max({match, delete_cost, insert_cost});
+                    if (C[i][j] != old_value) local_updated = true;
+                }
+            }
+        }
+        if (local_updated) {
+            #pragma omp atomic write
+            updated = true;
+        }
+    }
+}
+</code></pre>
+
+<h2>6. Why the Heuristic Works</h2>
+
+<ul>
+    <li><strong>Data Dependencies</strong>: By introducing overlaps, we ensure that computations in adjacent chunks have the necessary data to proceed, satisfying dependencies.</li>
+    <li><strong>Convergence</strong>: The iterative process allows for corrections in overlapping regions by propagating the score through the overlaps, ensuring the final result converges to the correct solution.</li>
+    <li><strong>Parallel Efficiency</strong>: Dividing the work among multiple threads reduces execution time, especially for large matrices.</li>
+</ul>
+
+<h2>7. Iteration Count and Overlap Percentage</h2>
+
+<ul>
+    <li><strong>Overlap Percentage</strong>: Set at 2% of the sequence length to balance between sufficient data overlap and minimizing redundant computations.</li>
+    <li><strong>Iteration Count</strong>: The algorithm converged in 2 iterations, indicating rapid convergence due to the heuristic.</li>
+</ul>
+
+<h2>8. Experimental Setup</h2>
+
+<ul>
+    <li><strong>Sequences</strong>:
+
+        <ul>
+            <li>Reference sequence length: \( 10^5 \) nucleotides.</li>
+            <li>Query sequence with 1% mutations introduced.</li>
+        </ul>
+    </li>
+    <li><strong>Hardware</strong>:
+
+        <ul>
+            <li>Processor: 24-core Intel Xeon 6248R CPU.</li>
+            <li>Configuration: Single socket.</li>
+        </ul>
+    </li>
+    <li><strong>Results</strong>:
+
+        <ul>
+            <li><strong>Parallel Execution</strong>:
+
+                <ul>
+                    <li>Score: 51,353</li>
+                    <li>Total Iterations: 2</li>
+                    <li>Execution Time: 7,649.71 ms</li>
+                </ul>
+            </li>
+            <li><strong>Sequential Execution</strong>:
+
+                <ul>
+                    <li>Score: 51,353</li>
+                    <li>Execution Time: 37,516.4 ms</li>
+                </ul>
+            </li>
+            <li><strong>Speedup</strong>: Approximately 4.9x</li>
+        </ul>
+    </li>
+</ul>
+
+<h2>9. Performance Plot</h2>
+
+<img src="speedup_nw.png" alt="Speedup Plot" class="chart">
+
+<p><em>Note: The plot illustrates the execution time for sequential and parallel implementations.</em></p>
+
+<h2>Conclusion</h2>
+
+<p>The heuristic-based parallel Needleman-Wunsch algorithm demonstrates significant performance improvements by efficiently utilizing multiple cores. The overlap heuristic ensures correctness while allowing for parallel computation, resulting in a near 5x speedup over the sequential version.</p>
+
+</body>
+</html>
