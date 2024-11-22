@@ -249,7 +249,7 @@ __global__ void dynamic_prefix_sum(int *input, int *block_sums, int n) {
     <div class="chart">
         <img src="prefix.png" alt="Performance Results" width="600">
     </div>
-    <p>The chart above compares the performance of different prefix sum methods, demonstrating the efficiency of shared memory and dynamic parallelism for managing inter-block dependencies.</p>
+    <p>The chart above compares the performance of different prefix sum methods, demonstrating the efficiency of shared memory and dynamic parallelism for managing inter-block dependencies. The naive prefix sum takes \(1288 ms\)</p>
 
     <h2>Conclusion</h2>
     <p>Optimizing prefix sum computation on GPUs requires careful consideration of memory access patterns, inter-block communication, and parallel execution. Dynamic parallelism and shared memory optimizations showcase the power of modern GPUs like the NVIDIA A100 in efficiently solving parallel problems.</p>
