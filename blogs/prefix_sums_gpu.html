@@ -91,6 +91,14 @@
 
     <h2>CUDA Implementations</h2>
 
+    <h2>Naive, Global, and Shared Memory Prefix Sums</h2>
+    <p>These implementations are designed for intra-block prefix sums:</p>
+    <ul>
+        <li><strong>Naive Prefix Sum:</strong> Processes elements sequentially within each block, making it inefficient.</li>
+        <li><strong>Global Memory Prefix Sum:</strong> Uses global memory to compute prefix sums, which is slower due to high memory latency.</li>
+        <li><strong>Shared Memory Prefix Sum:</strong> Utilizes shared memory for fast intra-block communication, significantly improving performance.</li>
+    </ul>
+
     <h3>1. Naive Prefix Sum</h3>
     <p>This implementation computes prefix sums sequentially within a parallel kernel, making it inefficient on GPUs:</p>
     <pre>
@@ -152,6 +160,25 @@ __global__ void shared_prefix_sum(int *input, int n) {
     }
 }
     </pre>
+
+    <h2>Multi-Kernel and Dynamic Prefix Sum</h2>
+    <p>The computation of prefix sums across multiple blocks requires handling inter-block dependencies. Two methods address this challenge:</p>
+
+    <h3>Multi-Kernel Prefix Sum</h3>
+    <p>The computation is divided into two kernels:</p>
+    <ul>
+        <li><strong>Local Prefix Sums:</strong> Each block computes the prefix sum for its elements using shared memory.</li>
+        <li><strong>Adjust Block Results:</strong> A second kernel adjusts the results by adding the cumulative sum of preceding blocks.</li>
+    </ul>
+    <p>This method is efficient but involves overhead due to launching multiple kernels and synchronizing between them.</p>
+
+    <h3>Dynamic Prefix Sum</h3>
+    <p>This approach uses dynamic parallelism to launch the adjustment kernel directly from the device:</p>
+    <ul>
+        <li>Each block computes its local prefix sum.</li>
+        <li>The last block dynamically launches the adjustment kernel, reducing host-device communication.</li>
+    </ul>
+    <p>This method is faster because it eliminates the need for the host to manage inter-block adjustments, making it ideal for workloads with significant inter-block dependencies.</p>
 
     <h3>4. Multi-Kernel Execution</h3>
     <p>This method splits the computation into two kernels: one for local prefix sums and another for adjustments across blocks.</p>
@@ -231,25 +258,28 @@ __global__ void dynamic_prefix_sum(int *input, int *block_sums, int n) {
 }
     </pre>
 
-    <h2>Why Are Shared Memory and Dynamic Parallelism Faster?</h2>
-    <h3>Shared Memory</h3>
+    <h2>Why is Dynamic Parallelism Faster Than Multi-Kernel Execution?</h2>
+    <h3>Multi-Kernel Prefix Sum</h3>
     <ul>
-        <li><strong>Low Latency:</strong> Shared memory is on-chip, allowing for much faster access than global memory.</li>
-        <li><strong>Thread Cooperation:</strong> Threads within a block collaborate efficiently without global memory bottlenecks.</li>
-        <li><strong>Reduced Overhead:</strong> Fewer global memory transactions lead to significant performance gains.</li>
+        <li><strong>Two-Step Execution:</strong> Multi-Kernel Prefix Sum involves launching two separate kernels. The first kernel computes local prefix sums within blocks, while the second kernel adjusts inter-block dependencies.</li>
+        <li><strong>Host Dependency:</strong> The host must synchronize between the two kernels, introducing overhead due to host-device communication.</li>
+        <li><strong>Efficient but Limited:</strong> While efficient for many workloads, the host dependency can become a bottleneck for large datasets or dynamic workloads.</li>
     </ul>
 
     <h3>Dynamic Parallelism</h3>
     <ul>
-        <li><strong>Host-Device Communication Reduction:</strong> Kernels can launch directly from the device, eliminating overhead from host interventions.</li>
-        <li><strong>Efficient Work Distribution:</strong> Inter-block dependencies are handled dynamically without additional kernel launches from the host.</li>
+        <li><strong>Device-Managed Execution:</strong> Dynamic Parallelism allows the last block to launch the adjustment kernel directly from the device, bypassing the host entirely.</li>
+        <li><strong>Reduced Overhead:</strong> Eliminates host-device communication, significantly reducing latency and improving performance for inter-block adjustments.</li>
+        <li><strong>Scalable and Flexible:</strong> Suitable for workloads where inter-block dependencies are complex or unpredictable.</li>
     </ul>
+
+    <p>In summary, Dynamic Parallelism outperforms Multi-Kernel Prefix Sum by reducing the dependency on the host for managing inter-block adjustments. This results in lower latency and better scalability for large-scale parallel workloads.</p>
 
     <h2>Performance Comparison</h2>
     <div class="chart">
         <img src="prefix.png" alt="Performance Results" width="600">
     </div>
-    <p>The chart above compares the performance of different prefix sum methods, demonstrating the efficiency of shared memory and dynamic parallelism for managing inter-block dependencies. The naive prefix sum takes \(1288 ms\)</p>
+    <p>The chart above compares the performance of different prefix sum methods, demonstrating the efficiency of shared memory and dynamic parallelism for managing inter-block dependencies.</p>
 
     <h2>Conclusion</h2>
     <p>Optimizing prefix sum computation on GPUs requires careful consideration of memory access patterns, inter-block communication, and parallel execution. Dynamic parallelism and shared memory optimizations showcase the power of modern GPUs like the NVIDIA A100 in efficiently solving parallel problems.</p>
