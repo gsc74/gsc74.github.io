@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CUDA Prefix Sum with Associative Operators</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border: 1px solid #ddd;
+            overflow-x: auto;
+        }
+        .chart {
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>Prefix Sum Computation Using CUDA</h1>
+    <p>Prefix sum (or scan) is a foundational operation in parallel computing. It computes cumulative sums over an array, enabling efficient algorithms for sorting, searching, and many other applications. This blog demonstrates various CUDA implementations of prefix sum on an NVIDIA A100 GPU, showcasing the advantages of shared memory and dynamic parallelism.</p>
+
+    <h2>Prefix Sum with Associative Operators</h2>
+    <p>The prefix sum of an array \( A \) produces an array \( S \), where:</p>
+    <p style="text-align: center;">\( S[i] = A[0] \oplus A[1] \oplus \dots \oplus A[i] \) for \( i \geq 0 \),</p>
+    <p>and \( \oplus \) is any associative operator (e.g., addition, multiplication, or bitwise AND).</p>
+
+    <p>The recursive definition of the prefix sum is:</p>
+    <p style="text-align: center;">\( S[i] = \begin{cases} 
+        A[0] & \text{if } i = 0, \\
+        S[i-1] \oplus A[i] & \text{if } i > 0.
+    \end{cases} \)</p>
+    <p>While addition (\( + \)) is used in this implementation, the approach generalizes to any associative operation.</p>
+
+    <h2>GPU Architecture Explained (Using NVIDIA A100)</h2>
+    <p>Understanding how GPUs work is crucial to optimizing parallel algorithms like prefix sum. Let’s break down the key architectural concepts using the NVIDIA A100 GPU as an example:</p>
+
+    <h3>Streaming Multiprocessors (SMs)</h3>
+    <p>An NVIDIA A100 GPU contains 108 Streaming Multiprocessors (SMs). Each SM acts as a mini-processor, capable of executing multiple threads simultaneously. Within an SM:</p>
+    <ul>
+        <li>There are 64 CUDA cores per SM, making a total of 6912 CUDA cores across the GPU.</li>
+        <li>Each SM has its own shared memory, up to 164 KB, for fast intra-block communication.</li>
+        <li>SMs handle blocks of threads, dividing the workload across multiple warps.</li>
+    </ul>
+
+    <h3>Threads and Warps</h3>
+    <p>Threads are the smallest unit of execution in a GPU. In CUDA:</p>
+    <ul>
+        <li>A <strong>warp</strong> consists of 32 threads that execute instructions in lockstep.</li>
+        <li>Each SM can schedule multiple warps concurrently, maximizing utilization of its cores.</li>
+    </ul>
+    <p>For example, if a thread block contains 1024 threads, it will be divided into \( 1024 / 32 = 32 \) warps.</p>
+
+    <h3>Blocks and Grids</h3>
+    <p>Threads are grouped into <strong>blocks</strong>, and blocks are organized into a <strong>grid</strong>. Each block executes independently, with shared memory facilitating communication among threads within a block.</p>
+    <ul>
+        <li>A thread block can contain up to 1024 threads.</li>
+        <li>A grid is a collection of blocks, distributed across the GPU’s SMs.</li>
+    </ul>
+    <p>For example, to process an array of 1 million elements with 1024 threads per block, we need \( \lceil 10^6 / 1024 \rceil = 976 \) blocks. These blocks are distributed across the 108 SMs of the A100.</p>
+
+    <h3>Memory Hierarchy</h3>
+    <ul>
+        <li><strong>Global Memory:</strong> Accessible by all threads, but with high latency (400–800 cycles).</li>
+        <li><strong>Shared Memory:</strong> Fast, on-chip memory shared by threads within a block.</li>
+        <li><strong>Registers:</strong> The fastest memory, private to each thread.</li>
+    </ul>
+    <p>Optimizing memory usage (e.g., minimizing global memory accesses) is critical for performance.</p>
+
+    <h2>Parallelizing Prefix Sum</h2>
+    <p>To efficiently compute prefix sums on a GPU, we leverage the parallel nature of CUDA. The key idea is to divide the computation into multiple steps, updating the array in-place with increasing strides. Here’s a step-by-step breakdown:</p>
+
+    <h3>Step 1: Load Data into Shared Memory</h3>
+    <p>Each thread copies a portion of the array from global memory into shared memory, allowing fast access during computation.</p>
+
+    <h3>Step 2: Compute Local Prefix Sums</h3>
+    <p>Using a stride-based approach, each thread computes its local prefix sum by combining values within its segment of the array:</p>
+    <p style="text-align: center;">\( A[i] = A[i] \oplus A[i - \text{stride}] \)</p>
+    <p>This is repeated for increasing strides (\( \text{stride} = 1, 2, 4, \dots \)) until the entire block is processed.</p>
+
+    <h3>Step 3: Handle Inter-Block Dependencies</h3>
+    <p>Since blocks compute prefix sums independently, their results must be adjusted to reflect the cumulative sums of preceding blocks. This requires a second phase or dynamic parallelism.</p>
+
+    <h2>CUDA Implementations</h2>
+
+    <h3>1. Naive Prefix Sum</h3>
+    <p>This implementation computes prefix sums sequentially within a parallel kernel, making it inefficient on GPUs:</p>
+    <pre>
+__global__ void naive_prefix_sum(int *input, int n) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid == 0) return;
+
+    for (int i = 1; i < n; ++i) {
+        if (tid == i) {
+            input[tid] += input[tid - 1];
+        }
+        __syncthreads();
+    }
+}
+    </pre>
+
+    <h3>2. Logarithmic Prefix Sum Using Global Memory</h3>
+    <p>This kernel uses \( O(\log n) \) steps but relies on slow global memory access:</p>
+    <pre>
+__global__ void global_prefix_sum(int *input, int n) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+    for (int step = 1; step < n; step *= 2) {
+        int temp = (tid >= step) ? input[tid - step] : 0;
+        __syncthreads();
+        if (tid < n) {
+            input[tid] += temp;
+        }
+        __syncthreads();
+    }
+}
+    </pre>
+
+    <h3>3. Logarithmic Prefix Sum Using Shared Memory</h3>
+    <p>This kernel leverages shared memory for faster intra-block communication:</p>
+    <pre>
+__global__ void shared_prefix_sum(int *input, int n) {
+    __shared__ int shared_mem[1024]; // Shared memory array
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+    // Load data into shared memory
+    if (tid < n) {
+        shared_mem[threadIdx.x] = input[tid];
+    } else {
+        shared_mem[threadIdx.x] = 0;
+    }
+    __syncthreads();
+
+    for (int step = 1; step < blockDim.x; step *= 2) {
+        int temp = (threadIdx.x >= step) ? shared_mem[threadIdx.x - step] : 0;
+        __syncthreads();
+        shared_mem[threadIdx.x] += temp;
+        __syncthreads();
+    }
+
+    // Write results back to global memory
+    if (tid < n) {
+        input[tid] = shared_mem[threadIdx.x];
+    }
+}
+    </pre>
+
+    <h3>4. Multi-Kernel Execution</h3>
+    <p>This method splits the computation into two kernels: one for local prefix sums and another for adjustments across blocks.</p>
+    <pre>
+__global__ void compute_local_prefix_sum(int *input, int *block_sums, int n) {
+    __shared__ int shared_mem[1024];
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+    // Compute local prefix sum
+    if (tid < n) {
+        shared_mem[threadIdx.x] = input[tid];
+    } else {
+        shared_mem[threadIdx.x] = 0;
+    }
+    __syncthreads();
+
+    for (int step = 1; step < blockDim.x; step *= 2) {
+        int temp = (threadIdx.x >= step) ? shared_mem[threadIdx.x - step] : 0;
+        __syncthreads();
+        shared_mem[threadIdx.x] += temp;
+        __syncthreads();
+    }
+
+    if (tid < n) {
+        input[tid] = shared_mem[threadIdx.x];
+    }
+
+    // Store the block sum
+    if (threadIdx.x == blockDim.x - 1) {
+        block_sums[blockIdx.x] = shared_mem[threadIdx.x];
+    }
+}
+
+__global__ void adjust_block_sums(int *input, int *block_sums, int n) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+    // Adjust with preceding block sums
+    if (blockIdx.x > 0 && tid < n) {
+        input[tid] += block_sums[blockIdx.x - 1];
+    }
+}
+    </pre>
+
+    <h3>5. Dynamic Parallelism</h3>
+    <p>Dynamic parallelism enables a kernel to launch another kernel for inter-block adjustments:</p>
+    <pre>
+__global__ void dynamic_prefix_sum(int *input, int *block_sums, int n) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+    __shared__ int shared_mem[1024];
+    if (tid < n) {
+        shared_mem[threadIdx.x] = input[tid];
+    } else {
+        shared_mem[threadIdx.x] = 0;
+    }
+    __syncthreads();
+
+    for (int step = 1; step < blockDim.x; step *= 2) {
+        int temp = (threadIdx.x >= step) ? shared_mem[threadIdx.x - step] : 0;
+        __syncthreads();
+        shared_mem[threadIdx.x] += temp;
+        __syncthreads();
+    }
+
+    if (tid < n) {
+        input[tid] = shared_mem[threadIdx.x];
+    }
+
+    if (threadIdx.x == blockDim.x - 1) {
+        block_sums[blockIdx.x] = shared_mem[threadIdx.x];
+    }
+
+    // Launch adjustment kernel dynamically
+    if (blockIdx.x == gridDim.x - 1 && threadIdx.x == 0) {
+        adjust_block_sums<<<gridDim.x, blockDim.x>>>(input, block_sums, n);
+    }
+}
+    </pre>
+
+    <h2>Why Are Shared Memory and Dynamic Parallelism Faster?</h2>
+    <h3>Shared Memory</h3>
+    <ul>
+        <li><strong>Low Latency:</strong> Shared memory is on-chip, allowing for much faster access than global memory.</li>
+        <li><strong>Thread Cooperation:</strong> Threads within a block collaborate efficiently without global memory bottlenecks.</li>
+        <li><strong>Reduced Overhead:</strong> Fewer global memory transactions lead to significant performance gains.</li>
+    </ul>
+
+    <h3>Dynamic Parallelism</h3>
+    <ul>
+        <li><strong>Host-Device Communication Reduction:</strong> Kernels can launch directly from the device, eliminating overhead from host interventions.</li>
+        <li><strong>Efficient Work Distribution:</strong> Inter-block dependencies are handled dynamically without additional kernel launches from the host.</li>
+    </ul>
+
+    <h2>Performance Comparison</h2>
+    <div class="chart">
+        <img src="prefix.png" alt="Performance Results" width="600">
+    </div>
+    <p>The chart above compares the performance of different prefix sum methods, demonstrating the efficiency of shared memory and dynamic parallelism for managing inter-block dependencies.</p>
+
+    <h2>Conclusion</h2>
+    <p>Optimizing prefix sum computation on GPUs requires careful consideration of memory access patterns, inter-block communication, and parallel execution. Dynamic parallelism and shared memory optimizations showcase the power of modern GPUs like the NVIDIA A100 in efficiently solving parallel problems.</p>
+</body>
+</html
