@@ -5,18 +5,72 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Blog Index - Optimization Techniques</title>
 <style>
-    body { font-family: Arial, sans-serif; line-height: 1.6; margin: 20px; }
-    h1 { color: #333; }
-    ul { list-style-type: none; padding: 0; }
-    li { margin: 10px 0; }
-    a { color: #0073e6; text-decoration: none; font-weight: bold; }
-    a:hover { text-decoration: underline; }
+    body {
+        font-family: Arial, sans-serif;
+        line-height: 1.6;
+        margin: 20px;
+        background: #f7f7f7;
+        color: #333;
+        overflow-x: hidden;
+    }
+    h1 {
+        color: #333;
+        text-align: center;
+        font-size: 2.5em;
+        animation: fadeIn 2s ease-in-out;
+    }
+    p {
+        animation: fadeIn 1.5s ease-in-out;
+    }
+    ul {
+        list-style-type: none;
+        padding: 0;
+        margin: 20px 0;
+    }
+    li {
+        margin: 15px 0;
+        animation: slideIn 1.5s ease-in-out;
+        transform: translateX(-100%);
+        opacity: 0;
+        animation-fill-mode: forwards;
+    }
+    li:nth-child(even) {
+        animation-delay: 0.5s;
+    }
+    li:nth-child(odd) {
+        animation-delay: 1s;
+    }
+    a {
+        color: #0073e6;
+        text-decoration: none;
+        font-weight: bold;
+        font-size: 1.2em;
+    }
+    a:hover {
+        text-decoration: underline;
+        color: #005bb5;
+    }
+    p {
+        margin: 5px 0 0;
+        font-size: 0.9em;
+        color: #555;
+    }
+
+    /* Animations */
+    @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+    }
+    @keyframes slideIn {
+        from { transform: translateX(-100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
 </style>
 </head>
 <body>
 
 <h1>Blog Index</h1>
-<p>Welcome to the blog! Here, we discuss various topics on optimization techniques and high-performance computing.</p>
+<p style="text-align: center;">Welcome to the blog! Here, we delve into advanced optimization techniques to maximize algorithm performance on high-performance computing systems. Explore topics ranging from SIMD vectorization to parallel algorithms tailored for cutting-edge architectures.</p>
 
 <ul>
     <li>
@@ -31,20 +85,21 @@
         <a href="roofline.html">3) Roofline Analysis of Matrix Multiplication</a>
         <p>We explore the roofline analysis of matrix multiplication. The roofline plot provides insights into whether a program is memory-bound (limited by data transfer rate) or compute-bound (limited by available computational throughput).</p>
     </li>
-
-    <li></li>
+    <li>
         <a href="par_NW.html">4) Parallel Needleman-Wunsch Algorithm</a>
         <p>We explore the anti-diagonal parallelization technique for the Needleman-Wunsch algorithm.</p>
     </li>
-
-    <li></li>
+    <li>
         <a href="prefix_sums_gpu.html">5) Understanding GPU Programming on NVIDIA A100 GPUs with Parallel Prefix Sums</a>
         <p>This blog explores the fundamentals of GPU programming using parallel prefix sums as a case study. It demonstrates various CUDA implementations, including naive, shared memory, and dynamic parallelism, highlighting the performance benefits of efficient memory management and GPU architecture on NVIDIA A100 GPUs.</p>
     </li>
-
-    <li></li>
+    <li>
         <a href="par_nw_heu.html">6) Heuristic-Based Parallel Needleman-Wunsch Algorithm </a>
         <p>This blog introduces a heuristic-based parallelization strategy for the Needleman-Wunsch (NW) algorithm, a cornerstone of bioinformatics used for global sequence alignment. Traditionally, the NW algorithm faces challenges in parallelization due to its sequential dependencies in dynamic programming computations. The proposed heuristic employs iterative dynamic programming with chunk-based computations, overlapping boundaries, and iterative updates, achieving both correctness and scalability.</p>
+    </li>
+    <li>
+        <a href="par_nw_heu.html">7) Accelerating Edit Distance Computation with Wavefront Alignment and AVX-512 </a>
+        <p>This blog explores the Wavefront Alignment algorithm for efficient edit distance computation and demonstrates how AVX-512 vectorization accelerates performance. Experimental results highlight significant runtime improvements on large DNA sequences.</p>
     </li>
 </ul>
 

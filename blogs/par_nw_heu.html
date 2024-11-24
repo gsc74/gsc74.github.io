@@ -6,7 +6,7 @@
     <script id="MathJax-script" async
             src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
     </script>
-    <style>
+     <style>
         body {
             font-family: Arial, sans-serif;
             line-height: 1.6;
@@ -21,6 +21,22 @@
         }
         .chart {
             text-align: center;
+        }
+        .highlight {
+            font-weight: bold;
+        }
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 0.9em;
+            color: #555;
+        }
+        .citation {
+            margin-top: 20px;
+            font-size: 0.9em;
+            color: #333;
+            border-top: 1px solid #ddd;
+            padding-top: 10px;
         }
     </style>
 </head>
@@ -253,6 +269,21 @@ while (updated) {
 <h2>Conclusion</h2>
 
 <p>The heuristic-based parallel Needleman-Wunsch algorithm demonstrates significant performance improvements by efficiently utilizing multiple cores. The overlap heuristic ensures correctness while allowing for parallel computation, resulting in a near 5x speedup over the sequential version.</p>
+
+<div class="References">
+    <h3>Citation</h3>
+    <p>
+        Needleman, Saul B., & Wunsch, Christian D. 
+        <strong>A general method applicable to the search for similarities in the amino acid sequence of two proteins</strong>. 
+        <em>Journal of Molecular Biology</em>, 48(3), 443–453. Elsevier BV, 1970. 
+        <a href="http://dx.doi.org/10.1016/0022-2836(70)90057-4" target="_blank">http://dx.doi.org/10.1016/0022-2836(70)90057-4</a>.
+    </p>
+</div>
+
+<footer>
+    <p>&copy; 2024. All rights reserved.</p>
+    <p>Published on: November 24, 2024</p>
+</footer>
 
 </body>
 </html>

@@ -5,12 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Matrix Multiplication Performance on A100 GPU with 8192x8192 Matrix</title>
     <style>
-        body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0 auto; max-width: 800px; padding: 20px; }
-        h1 { color: #333; }
-        h2 { color: #555; }
-        p, pre { color: #666; }
-        .code { background-color: #f4f4f4; padding: 10px; border-left: 3px solid #333; }
-        .plot { text-align: center; margin-top: 20px; }
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border: 1px solid #ddd;
+            overflow-x: auto;
+        }
+        .chart {
+            text-align: center;
+        }
+        .highlight {
+            font-weight: bold;
+        }
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 0.9em;
+            color: #555;
+        }
     </style>
 </head>
 <body>
@@ -130,5 +148,9 @@ __global__ void matMulTensorCoreWMMA(const __half* A, const __half* B, float* C,
     
     <p>The results indicate that shared memory and loop unrolling offer the best performance for large matrix sizes. While Tensor Cores are highly effective for small or batched matrix operations typical in deep learning, they were less beneficial here due to the overhead associated with managing small tiles for a large 8192x8192 matrix.</p>
     
+    <footer>
+        <p>&copy; 2024. All rights reserved.</p>
+        <p>Published on: November 24, 2024</p>
+    </footer>
 </body>
 </html>

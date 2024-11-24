@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Accelerating Edit Distance Computation with Wavefront Alignment and AVX-512</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border: 1px solid #ddd;
+            overflow-x: auto;
+        }
+        .chart {
+            text-align: center;
+        }
+        .highlight {
+            font-weight: bold;
+        }
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 0.9em;
+            color: #555;
+        }
+        .citation {
+            margin-top: 20px;
+            font-size: 0.9em;
+            color: #333;
+            border-top: 1px solid #ddd;
+            padding-top: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Accelerating Edit Distance Computation with Wavefront Alignment and AVX-512</h1>
+
+<h2>1. What is Edit Distance?</h2>
+
+<p>
+    <strong>Edit distance</strong> is a fundamental metric in computer science and bioinformatics that quantifies how dissimilar two strings are by counting the minimum number of operations required to transform one string into another. The most common operations include:
+</p>
+<ul>
+    <li><strong>Insertion</strong>: Adding a character.</li>
+    <li><strong>Deletion</strong>: Removing a character.</li>
+    <li><strong>Substitution</strong>: Replacing one character with another.</li>
+</ul>
+<p>
+    For example, the edit distance between "kitten" and "sitting" is 3:
+</p>
+<ol>
+    <li><code>kitten</code> → <code>sitten</code> (substitute 'k' with 's')</li>
+    <li><code>sitten</code> → <code>sittin</code> (substitute 'e' with 'i')</li>
+    <li><code>sittin</code> → <code>sitting</code> (insert 'g')</li>
+</ol>
+
+<h2>2. Why Wavefront Alignment Algorithm?</h2>
+
+<p>
+    Traditional dynamic programming algorithms for computing edit distance, such as the Wagner-Fischer algorithm, have a time and space complexity of O(<em>mn</em>), where <em>m</em> and <em>n</em> are the lengths of the two strings. This becomes impractical for long sequences, such as DNA strands in bioinformatics.
+</p>
+<p>
+    The <strong>Wavefront Alignment (WFA)</strong> algorithm optimizes space usage by focusing on the "wavefront" of the dynamic programming matrix, only computing and storing necessary parts. It exploits the fact that edits occur in diagonal patterns across the matrix, allowing for significant reductions in both time and space complexity.
+</p>
+<p>
+    Importantly, the WFA algorithm uses <strong>O(ns)</strong> space, where <em>n</em> is the sequence length and <em>s</em> is the maximum edit distance. This parameterized linear space requirement makes it suitable for aligning long sequences efficiently.
+</p>
+
+<h2>3. Pseudocode for Wavefront Alignment Algorithm</h2>
+
+<pre><code>// Initialize wavefront arrays
+M_old = [INT_MIN] * (2 * max_score + 1)
+M_new = [INT_MIN] * (2 * max_score + 1)
+M_old[offset] = 0
+
+score = 0
+while true:
+    for k from -score to score:
+        // Calculate insertion, deletion, and substitution
+        ins = M_old[offset + k - 1] + 1 if k > -score else INT_MIN
+        del = M_old[offset + k + 1] + 1 if k < score else INT_MIN
+        sub = M_old[offset + k]
+        
+        max_val = max(ins, del, sub)
+        if max_val == INT_MIN:
+            continue
+        
+        // Diagonal extension
+        i_pos = max_val
+        j_pos = i_pos - k
+        while i_pos < m and j_pos < n and str1[i_pos] == str2[j_pos]:
+            i_pos += 1
+            j_pos += 1
+        
+        M_new[offset + k] = i_pos
+        
+        // Check for alignment completion
+        if i_pos >= m and j_pos >= n:
+            return score
+    // Swap wavefronts for next iteration
+    M_old, M_new = M_new, [INT_MIN] * (2 * max_score + 1)
+    score += 1
+</code></pre>
+
+<h2>4. Naive Implementation (Code Snippet)</h2>
+
+<p>The following is the C++ implementation of the Wavefront Alignment algorithm without vectorization:</p>
+
+<pre><code>#include &lt;iostream&gt;
+#include &lt;vector&gt;
+#include &lt;string&gt;
+#include &lt;algorithm&gt;
+#include &lt;climits&gt;
+
+using namespace std;
+
+int wavefront_alignment_sequential(const string& str1, const string& str2) {
+    int m = str1.length();
+    int n = str2.length();
+
+    int max_score = m + n;
+
+    vector&lt;int&gt; M_old(2 * max_score + 1, INT_MIN);
+    vector&lt;int&gt; M_new(2 * max_score + 1, INT_MIN);
+    int offset = max_score;
+    M_old[offset] = 0;
+
+    int score = 0;
+    while (true) {
+        for (int k = -score; k &lt;= score; ++k) {
+            int diag_idx = offset + k;
+
+            if (diag_idx &lt; 0 || diag_idx &gt;= 2 * max_score + 1) {
+                continue;
+            }
+
+            int ins = (k &gt; -score) ? M_old[diag_idx - 1] + 1 : INT_MIN;
+            int del = (k &lt; score) ? M_old[diag_idx + 1] + 1 : INT_MIN;
+            int sub = M_old[diag_idx];
+
+            int max_val = max({ins, del, sub});
+            if (max_val == INT_MIN) continue;
+
+            int i_pos = max_val;
+            int j_pos = i_pos - k;
+
+            while (i_pos &lt; m && j_pos &lt; n && str1[i_pos] == str2[j_pos]) {
+                ++i_pos;
+                ++j_pos;
+            }
+
+            M_new[diag_idx] = i_pos;
+
+            if (i_pos &gt;= m && j_pos &gt;= n) {
+                return score;
+            }
+        }
+
+        M_old.swap(M_new);
+        fill(M_new.begin(), M_new.end(), INT_MIN);
+
+        ++score;
+    }
+}
+</code></pre>
+
+<h2>5. AVX-512 Implementation (Code Snippet)</h2>
+
+<p>Below is the AVX-512 optimized version of the WFA algorithm. It leverages SIMD instructions to process multiple diagonals in parallel:</p>
+
+<pre><code>#include &lt;immintrin.h&gt;
+
+int wavefront_alignment_avx512(const string& str1, const string& str2) {
+    int m = str1.length();
+    int n = str2.length();
+
+    int max_score = m + n;
+
+    vector&lt;int&gt; M(2 * max_score + 1, INT_MIN);
+    int offset = max_score;
+    M[offset] = 0;
+
+    int score = 0;
+    while (true) {
+        for (int k = -score; k &lt;= score; k += 16) {
+            int remaining_diagonals = min(16, score - k + 1);
+            __mmask16 valid_mask = (1 &lt;&lt; remaining_diagonals) - 1;
+
+            __m512i diag_indices = _mm512_set_epi32(
+                k + 15, k + 14, k + 13, k + 12, k + 11, k + 10, k + 9, k + 8,
+                k + 7, k + 6, k + 5, k + 4, k + 3, k + 2, k + 1, k);
+
+            __m512i M_curr = _mm512_maskz_loadu_epi32(valid_mask, &amp;M[offset + k]);
+
+            __m512i M_left = _mm512_maskz_loadu_epi32(valid_mask, &amp;M[offset + k - 1]);
+            __m512i ins = _mm512_mask_add_epi32(M_curr, valid_mask, M_left, _mm512_set1_epi32(1));
+
+            __m512i M_right = _mm512_maskz_loadu_epi32(valid_mask, &amp;M[offset + k + 1]);
+            __m512i del = _mm512_mask_add_epi32(M_curr, valid_mask, M_right, _mm512_set1_epi32(1));
+
+            __m512i sub = M_curr;
+
+            __m512i max_val = _mm512_max_epi32(ins, _mm512_max_epi32(del, sub));
+
+            alignas(64) int max_values[16];
+            _mm512_store_epi32(max_values, max_val);
+
+            for (int i = 0; i &lt; remaining_diagonals; ++i) {
+                int diag = k + i;
+                int diag_idx = offset + diag;
+                int i_pos = max_values[i];
+                int j_pos = i_pos - diag;
+
+                while (i_pos &lt; m && j_pos &lt; n && str1[i_pos] == str2[j_pos]) {
+                    ++i_pos;
+                    ++j_pos;
+                }
+
+                max_values[i] = i_pos;
+                M[diag_idx] = i_pos;
+
+                if (i_pos &gt;= m && j_pos &gt;= n) {
+                    return score;
+                }
+            }
+
+            _mm512_mask_storeu_epi32(&amp;M[offset + k], valid_mask, _mm512_load_epi32(max_values));
+        }
+
+        ++score;
+    }
+}
+</code></pre>
+
+<h2>6. Experiments</h2>
+
+<p>We conducted experiments using synthetic DNA sequences generated with a controlled mutation rate:</p>
+<ul>
+    <li>The sequences were <strong>1,000,000</strong> nucleotides long.</li>
+    <li>Mutations were introduced at a <strong>1%</strong> rate.</li>
+    <li>The experiments were run on an <strong>Intel Xeon 6242R 20-Core Processor</strong>.</li>
+    <li>We used <strong>1 core</strong> for both the sequential and AVX-512 SIMD parallel implementations.</li>
+</ul>
+
+
+<h2>7. Performance Analysis</h2>
+
+<p>The results of the experiments are as follows:</p>
+
+<ul>
+    <li><strong>Sequential Edit Distance</strong>: 19,854</li>
+    <li><strong>Sequential Runtime</strong>: 17.2858 seconds</li>
+    <li><strong>AVX-512 Edit Distance</strong>: 19,854</li>
+    <li><strong>AVX-512 Runtime</strong>: 1.8616 seconds</li>
+    <li><strong>Speedup</strong>: <span class="highlight">9.28545x</span></li>
+</ul>
+
+<div class="chart">
+    <img src="WFA_cpu.png" alt="WFA Performance Results" width="600">
+</div>
+
+<p>The above plot illustrates the performance of the sequential and AVX-512 implementations. The horizontal bars represent the runtime in seconds, and the transparent cyan color highlights the difference in execution time.</p>
+
+<p>The AVX-512 implementation achieves a significant speedup of <strong>9.28x</strong> over the sequential version. This is attributed to the following factors:</p>
+
+<ul>
+    <li>The <code>-O3</code> compiler flag optimizes both implementations, but the AVX-512 version benefits more due to explicit vectorization.</li>
+    <li>The overhead of setting up AVX-512 instructions is amortized over large data sizes.</li>
+    <li>Efficient utilization of SIMD registers allows parallel processing of multiple diagonals.</li>
+</ul>
+
+<h2>8. Conclusion</h2>
+
+<p>The Wavefront Alignment algorithm provides an efficient way to compute edit distances with reduced space complexity, using <strong>O(ns)</strong> space where <em>n</em> is the sequence length and <em>s</em> is the maximum edit distance. Leveraging AVX-512 instructions further accelerates the computation by parallelizing operations across multiple data points. Our experiments demonstrate substantial performance gains on modern CPUs, with a speedup of <strong>9.28x</strong> over the sequential implementation.</p>
+
+<p>While AVX-512 offers significant acceleration, the parameterized linear space requirements of the WFA algorithm make it well-suited for GPUs, which can handle large-scale parallel computations more efficiently. As data sizes continue to grow, combining algorithmic efficiency with hardware capabilities becomes increasingly important.</p>
+
+<div class="References">
+    <h3>Citation</h3>
+    <p>
+        Marco-Sola, Santiago, Moure, Juan Carlos, Moreto, Miquel, & Espinosa, Antonio. 
+        <strong>Fast gap-affine pairwise alignment using the wavefront algorithm</strong>. 
+        <em>Bioinformatics</em>, 37(4), 456–463. Oxford University Press, 2020. 
+        <a href="http://dx.doi.org/10.1093/bioinformatics/btaa777" target="_blank">http://dx.doi.org/10.1093/bioinformatics/btaa777</a>.
+    </p>
+</div>
+
+<footer>
+    <p>&copy; 2024. All rights reserved.</p>
+    <p>Published on: November 24, 2024</p>
+</footer>
+
+</body>
+</html>

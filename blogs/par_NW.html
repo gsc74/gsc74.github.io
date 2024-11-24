@@ -6,13 +6,37 @@
     <title>Parallel Needleman-Wunsch Algorithm</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/MathJax.js?config=TeX-MML-AM_CHTML"></script>
     <style>
-        body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0 auto; max-width: 800px; padding: 20px; }
-        h1 { color: #333; }
-        h2 { color: #555; }
-        h3 { color: #444; }
-        p, pre { color: #666; }
-        .code { background-color: #f4f4f4; padding: 10px; border-left: 3px solid #333; }
-        .plot { text-align: center; margin-top: 20px; }
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border: 1px solid #ddd;
+            overflow-x: auto;
+        }
+        .chart {
+            text-align: center;
+        }
+        .highlight {
+            font-weight: bold;
+        }
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 0.9em;
+            color: #555;
+        }
+        .citation {
+            margin-top: 20px;
+            font-size: 0.9em;
+            color: #333;
+            border-top: 1px solid #ddd;
+            padding-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -167,5 +191,20 @@
     <h2>Analysis</h2>
     <p>The results indicate that the parallelized Needleman-Wunsch algorithm using OpenMP significantly reduces runtime, making it more efficient for large sequences. However, load imbalance due to the varying size of anti-diagonals still presents a challenge. Dynamic scheduling and effective workload balancing are essential for further optimization.</p>
 
+    <div class="References">
+        <h3>Citation</h3>
+        <p>
+            Needleman, Saul B., & Wunsch, Christian D. 
+            <strong>A general method applicable to the search for similarities in the amino acid sequence of two proteins</strong>. 
+            <em>Journal of Molecular Biology</em>, 48(3), 443–453. Elsevier BV, 1970. 
+            <a href="http://dx.doi.org/10.1016/0022-2836(70)90057-4" target="_blank">http://dx.doi.org/10.1016/0022-2836(70)90057-4</a>.
+        </p>
+    </div>
+
+    <footer>
+        <p>&copy; 2024. All rights reserved.</p>
+        <p>Published on: November 24, 2024</p>
+    </footer>
+    
 </body>
 </html>

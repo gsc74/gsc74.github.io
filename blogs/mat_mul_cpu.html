@@ -5,10 +5,30 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Matrix Multiplication Optimization Techniques</title>
 <style>
-    body { font-family: Arial, sans-serif; line-height: 1.6; margin: 20px; }
-    code, pre { background-color: #f4f4f4; padding: 2px 4px; font-size: 1em; }
-    pre { overflow-x: auto; padding: 10px; }
-    h1, h2, h3 { color: #333; }
+    body {
+        font-family: Arial, sans-serif;
+        line-height: 1.6;
+        max-width: 800px;
+        margin: 0 auto;
+    }
+    pre {
+        background-color: #f4f4f4;
+        padding: 10px;
+        border: 1px solid #ddd;
+        overflow-x: auto;
+    }
+    .chart {
+        text-align: center;
+    }
+    .highlight {
+        font-weight: bold;
+    }
+    footer {
+        text-align: center;
+        margin-top: 30px;
+        font-size: 0.9em;
+        color: #555;
+    }
 </style>
 </head>
 <body>
@@ -214,6 +234,11 @@ void avx512_tiled_multiplication(const std::vector&lt;int32_t&gt;& A, const std:
 <h2>Performance Comparison</h2>
 <p>The chart below shows the time taken by each matrix multiplication method under these experimental conditions.</p>
 <img src="matrix_multiplication_optimization_plot.png" alt="Performance comparsion of the different Multiplication Optimization Techniques" style="width:80%; margin-top:20px;">
+
+<footer>
+    <p>&copy; 2024. All rights reserved.</p>
+    <p>Published on: November 24, 2024</p>
+</footer>
 
 </body>
 </html>

@@ -22,6 +22,22 @@
         .chart {
             text-align: center;
         }
+        .highlight {
+            font-weight: bold;
+        }
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 0.9em;
+            color: #555;
+        }
+        .citation {
+            margin-top: 20px;
+            font-size: 0.9em;
+            color: #333;
+            border-top: 1px solid #ddd;
+            padding-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -283,5 +299,22 @@ __global__ void dynamic_prefix_sum(int *input, int *block_sums, int n) {
 
     <h2>Conclusion</h2>
     <p>Optimizing prefix sum computation on GPUs requires careful consideration of memory access patterns, inter-block communication, and parallel execution. Dynamic parallelism and shared memory optimizations showcase the power of modern GPUs like the NVIDIA A100 in efficiently solving parallel problems.</p>
+    
+    <div class="References">
+        <h3>Citations</h3>
+        <p>
+            Harris, Mark, Sengupta, Shubhabrata, & Owens, John D. 
+            <strong>Chapter 39. Parallel Prefix Sum (Scan) with CUDA</strong>. 
+            In <em>GPU Gems 3</em>, Part VI: GPU Computing. NVIDIA Corporation. 
+            <a href="https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda" target="_blank">
+            https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda</a>.
+        </p>
+    </div>
+    
+    <footer>
+        <p>&copy; 2024. All rights reserved.</p>
+        <p>Published on: November 24, 2024</p>
+    </footer>
+    
 </body>
 </html
