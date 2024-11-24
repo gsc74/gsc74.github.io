@@ -252,7 +252,7 @@ int wavefront_alignment_avx512(const string& str1, const string& str2) {
     <li><strong>Sequential Runtime</strong>: 17.2858 seconds</li>
     <li><strong>AVX-512 Edit Distance</strong>: 19,854</li>
     <li><strong>AVX-512 Runtime</strong>: 1.8616 seconds</li>
-    <li><strong>Speedup</strong>: <span class="highlight">9.28545x</span></li>
+    <li><strong>Speedup</strong>: <span class="highlight">9.29x</span></li>
 </ul>
 
 <div class="chart">
@@ -271,7 +271,7 @@ int wavefront_alignment_avx512(const string& str1, const string& str2) {
 
 <h2>8. Conclusion</h2>
 
-<p>The Wavefront Alignment algorithm provides an efficient way to compute edit distances with reduced space complexity, using <strong>O(ns)</strong> space where <em>n</em> is the sequence length and <em>s</em> is the maximum edit distance. Leveraging AVX-512 instructions further accelerates the computation by parallelizing operations across multiple data points. Our experiments demonstrate substantial performance gains on modern CPUs, with a speedup of <strong>9.28x</strong> over the sequential implementation.</p>
+<p>The Wavefront Alignment algorithm provides an efficient way to compute edit distances with reduced space complexity, using <strong>O(ns)</strong> space where <em>n</em> is the sequence length and <em>s</em> is the maximum edit distance. Leveraging AVX-512 instructions further accelerates the computation by parallelizing operations across multiple data points. Our experiments demonstrate substantial performance gains on modern CPUs, with a speedup of <strong>9.29x</strong> over the sequential implementation.</p>
 
 <p>While AVX-512 offers significant acceleration, the parameterized linear space requirements of the WFA algorithm make it well-suited for GPUs, which can handle large-scale parallel computations more efficiently. As data sizes continue to grow, combining algorithmic efficiency with hardware capabilities becomes increasingly important.</p>
 
