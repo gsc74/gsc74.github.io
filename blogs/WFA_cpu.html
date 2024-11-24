@@ -66,7 +66,7 @@
     Traditional dynamic programming algorithms for computing edit distance, such as the Wagner-Fischer algorithm, have a time and space complexity of O(<em>mn</em>), where <em>m</em> and <em>n</em> are the lengths of the two strings. This becomes impractical for long sequences, such as DNA strands in bioinformatics.
 </p>
 <p>
-    The <strong>Wavefront Alignment (WFA)</strong> algorithm optimizes space usage by focusing on the "wavefront" of the dynamic programming matrix, only computing and storing necessary parts. It exploits the fact that edits occur in diagonal patterns across the matrix, allowing for significant reductions in both time and space complexity.
+    The <strong>Wavefront Alignment (WFA)</strong> algorithm optimizes space usage by focusing on the "wavefront" of the dynamic programming table, only computing and storing necessary parts. It exploits the fact that edits occur in diagonal patterns across the table, allowing for significant reductions in both time and space complexity.
 </p>
 <p>
     Importantly, the WFA algorithm uses <strong>O(ns)</strong> space, where <em>n</em> is the sequence length and <em>s</em> is the maximum edit distance. This parameterized linear space requirement makes it suitable for aligning long sequences efficiently.
@@ -112,13 +112,7 @@ while true:
 
 <p>The following is the C++ implementation of the Wavefront Alignment algorithm without vectorization:</p>
 
-<pre><code>#include &lt;iostream&gt;
-#include &lt;vector&gt;
-#include &lt;string&gt;
-#include &lt;algorithm&gt;
-#include &lt;climits&gt;
-
-using namespace std;
+<pre><code>
 
 int wavefront_alignment_sequential(const string& str1, const string& str2) {
     int m = str1.length();
@@ -174,7 +168,7 @@ int wavefront_alignment_sequential(const string& str1, const string& str2) {
 
 <p>Below is the AVX-512 optimized version of the WFA algorithm. It leverages SIMD instructions to process multiple diagonals in parallel:</p>
 
-<pre><code>#include &lt;immintrin.h&gt;
+<pre><code>
 
 int wavefront_alignment_avx512(const string& str1, const string& str2) {
     int m = str1.length();
