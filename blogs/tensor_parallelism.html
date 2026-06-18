@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>A Beginner's Guide to Tensor Parallelism in Autoregressive LLM Inference</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async
+            src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+    </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.62;
+            max-width: 920px;
+            margin: 0 auto;
+            padding: 22px;
+            color: #111;
+        }
+        h1, h2, h3 {
+            line-height: 1.25;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border: 1px solid #ddd;
+            overflow-x: auto;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 18px 0;
+            font-size: 0.94em;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 8px;
+            vertical-align: top;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .note {
+            background: #fff8dc;
+            border-left: 4px solid #d6a600;
+            padding: 10px;
+            margin: 12px 0;
+        }
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 0.9em;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+
+<h1>A Beginner's Guide to Tensor Parallelism in Autoregressive LLM Inference</h1>
+
+<h2>1. Motivation</h2>
+
+<p>
+Autoregressive large language models are dominated by dense linear algebra in two parts of every decoder block:
+the self-attention sublayer and the MLP sublayer. As model size, context length, and batch size increase, a single
+GPU may not have enough memory bandwidth, compute throughput, or device memory to execute the model efficiently.
+</p>
+
+<p>
+Tensor parallelism partitions large projection matrices across a tensor-parallel group of \(p\) GPUs. Each rank
+computes a shard of the output, and collective communication is used at the points where sharded outputs must be
+reduced or where a sharded attention context must be made visible.
+</p>
+
+<p>
+The purpose of this article is to study tensor parallelism using tensor shapes, matrix products, and
+communication volumes.
+</p>
+
+<h2>2. Notation</h2>
+
+<table>
+    <tr><th>Symbol</th><th>Definition</th></tr>
+    <tr><td>\(B\)</td><td>Global batch size: number of independent autoregressive sequences.</td></tr>
+    <tr><td>\(B_q\)</td><td>Batch size of activation shard \(q\), typically \(B_q=B/p\) for batch-sharded activations.</td></tr>
+    <tr><td>\(T\)</td><td>Context length or sequence length.</td></tr>
+    <tr><td>\(T_q\)</td><td>Query length. In decode, \(T_q=1\).</td></tr>
+    <tr><td>\(H\)</td><td>Residual-stream hidden dimension.</td></tr>
+    <tr><td>\(I\)</td><td>MLP intermediate dimension.</td></tr>
+    <tr><td>\(L\)</td><td>Number of decoder blocks.</td></tr>
+    <tr><td>\(\ell\)</td><td>Decoder-block index.</td></tr>
+    <tr><td>\(p\)</td><td>Tensor-parallel degree: number of ranks in one tensor-parallel group.</td></tr>
+    <tr><td>\(r\)</td><td>Tensor-parallel rank index, \(r\in\{1,\dots,p\}\).</td></tr>
+    <tr><td>\(q\)</td><td>Activation shard index. The shard may be along the batch dimension or sequence dimension.</td></tr>
+    <tr><td>\(i,j,k\)</td><td>Matrix-entry indices.</td></tr>
+    <tr><td>\(b\)</td><td>Batch index.</td></tr>
+    <tr><td>\(t,u\)</td><td>Token-position indices.</td></tr>
+    <tr><td>\(a\)</td><td>Attention-head index.</td></tr>
+    <tr><td>\(h\)</td><td>Number of query heads.</td></tr>
+    <tr><td>\(h_{kv}\)</td><td>Number of key/value heads.</td></tr>
+    <tr><td>\(d\)</td><td>Per-head dimension.</td></tr>
+    <tr><td>\(H_q\)</td><td>Total query projection dimension, \(H_q=hd\).</td></tr>
+    <tr><td>\(H_{kv}\)</td><td>Total key/value projection dimension, \(H_{kv}=h_{kv}d\).</td></tr>
+    <tr><td>\(s\)</td><td>Bytes per scalar element. For BF16 or FP16, \(s=2\).</td></tr>
+    <tr><td>\(X_\ell\)</td><td>Residual-stream activation at the input of decoder block \(\ell\).</td></tr>
+    <tr><td>\(\widetilde{X}_\ell\)</td><td>Residual stream after the self-attention sublayer of decoder block \(\ell\).</td></tr>
+    <tr><td>\(Q,K,V\)</td><td>Query, key, and value tensors.</td></tr>
+    <tr><td>\(S\)</td><td>Attention score tensor before softmax.</td></tr>
+    <tr><td>\(P\)</td><td>Attention probability tensor after softmax.</td></tr>
+    <tr><td>\(O\)</td><td>Self-attention output before the output projection.</td></tr>
+    <tr><td>\(Y\)</td><td>Self-attention output after the output projection.</td></tr>
+    <tr><td>\(A\)</td><td>MLP intermediate activation.</td></tr>
+    <tr><td>\(Z\)</td><td>MLP output after the down projection.</td></tr>
+    <tr><td>\(W_Q,W_K,W_V\)</td><td>Query, key, and value projection matrices.</td></tr>
+    <tr><td>\(W_O\)</td><td>Self-attention output projection matrix.</td></tr>
+    <tr><td>\(W_g,W_u\)</td><td>MLP gate and up projection matrices.</td></tr>
+    <tr><td>\(W_d\)</td><td>MLP down projection matrix.</td></tr>
+    <tr><td>\(\phi\)</td><td>Elementwise activation function.</td></tr>
+    <tr><td>\(\odot\)</td><td>Elementwise multiplication.</td></tr>
+    <tr><td>\(M_{\mathrm{causal}}\)</td><td>Causal mask for autoregressive self-attention.</td></tr>
+    <tr><td>\(M_H\)</td><td>Number of elements in a full hidden activation tensor, \(M_H=BTH\).</td></tr>
+    <tr><td>\(M_{KV}\)</td><td>Number of elements in one full key or value tensor, \(M_{KV}=BTH_{kv}\).</td></tr>
+</table>
+
+<h2>3. Linear Algebra and Communication Primitives</h2>
+
+<h3>3.1 Matrix Multiplication</h3>
+
+<p>
+For
+</p>
+
+<p>
+\[
+A\in\mathbb{R}^{m\times n},
+\qquad
+B\in\mathbb{R}^{n\times k},
+\]
+</p>
+
+<p>
+the product \(C=AB\) satisfies
+</p>
+
+<p>
+\[
+C\in\mathbb{R}^{m\times k},
+\qquad
+C_{ij}=\sum_{k'=1}^{n}A_{ik'}B_{k'j}.
+\]
+</p>
+
+<h3>3.2 Elementwise Operations</h3>
+
+<p>
+Elementwise multiplication is
+</p>
+
+<p>
+\[
+(A\odot B)_{ij}=A_{ij}B_{ij}.
+\]
+</p>
+
+<p>
+For an elementwise nonlinearity \(\phi\),
+</p>
+
+<p>
+\[
+(\phi(A))_{ij}=\phi(A_{ij}).
+\]
+</p>
+
+<h3>3.3 Matrix Partitioning</h3>
+
+<p>
+Column-wise partitioning across \(p\) tensor-parallel ranks is written as
+</p>
+
+<p>
+\[
+W=[W_1,W_2,\dots,W_p].
+\]
+</p>
+
+<p>
+Row-wise partitioning is written as
+</p>
+
+<p>
+\[
+W=
+\begin{bmatrix}
+W_1\\
+W_2\\
+\vdots\\
+W_p
+\end{bmatrix}.
+\]
+</p>
+
+<h3>3.4 Causal Mask</h3>
+
+<p>
+The causal mask prevents position \(t\) from attending to future position \(u>t\):
+</p>
+
+<p>
+\[
+M_{\mathrm{causal}}(t,u)=
+\begin{cases}
+0, & u\leq t,\\
+-\infty, & u>t.
+\end{cases}
+\]
+</p>
+
+<h3>3.5 Collectives</h3>
+
+<table>
+    <tr><th>Collective</th><th>Definition</th><th>Per-rank communication volume in bytes</th></tr>
+    <tr>
+        <td>AllReduce</td>
+        <td>
+            Each rank starts with \(X_r\). All ranks receive
+            \[
+            X=\sum_{r=1}^{p}X_r.
+            \]
+        </td>
+        <td>
+            \[
+            2\frac{p-1}{p}Ns
+            \]
+        </td>
+    </tr>
+    <tr>
+        <td>ReduceScatter</td>
+        <td>
+            First reduce
+            \[
+            X=\sum_{r=1}^{p}X_r,
+            \]
+            then rank \(q\) receives one shard \(X^{(q)}\).
+        </td>
+        <td>
+            \[
+            \frac{p-1}{p}Ns
+            \]
+        </td>
+    </tr>
+    <tr>
+        <td>AllGather</td>
+        <td>
+            Each rank starts with shard \(X^{(q)}\). All ranks receive
+            \[
+            X=[X^{(1)},X^{(2)},\dots,X^{(p)}].
+            \]
+        </td>
+        <td>
+            \[
+            \frac{p-1}{p}Ns
+            \]
+        </td>
+    </tr>
+</table>
+
+<p>
+Here \(N\) is the number of scalar elements in the full tensor involved in the collective. For hidden activations,
+\(N=M_H=BTH\). For one key or one value tensor, \(N=M_{KV}=BTH_{kv}\).
+</p>
+
+
+<h3>3.6 Communication Model</h3>
+
+<p>
+Communication costs are derived assuming communication-optimal implementations of collective communication primitives.
+Specifically, AllReduce, ReduceScatter, and AllGather are assumed to use recursive-doubling or ring-based algorithms
+whose communicated volume per rank scales as \((p-1)/p\) times the message size.
+</p>
+
+<p>
+Let \(N\) denote the number of communicated elements and let \(s\) denote the number of bytes per element.
+</p>
+
+<p>
+The communicated bytes per rank are defined as:
+</p>
+
+<p>
+\[
+C_{AG}(N,p)
+=
+\frac{p-1}{p}Ns
+\]
+</p>
+
+<p>
+\[
+C_{RS}(N,p)
+=
+\frac{p-1}{p}Ns
+\]
+</p>
+
+<p>
+\[
+C_{AR}(N,p)
+=
+2\frac{p-1}{p}Ns
+\]
+</p>
+
+<p>
+where \(C_{AG}\), \(C_{RS}\), and \(C_{AR}\) denote the communicated bytes per rank for
+AllGather, ReduceScatter, and AllReduce respectively.
+</p>
+
+<h2>4. Autoregressive Inference Phases</h2>
+
+<h3>4.1 Prefill</h3>
+
+<p>
+In prefill, the full prompt is processed. The residual-stream activation entering a decoder block is
+</p>
+
+<p>
+\[
+X_\ell\in\mathbb{R}^{B\times T\times H}.
+\]
+</p>
+
+<p>
+The residual activation memory is
+</p>
+
+<p>
+\[
+\mathrm{Mem}_{\mathrm{act}}=BTHs.
+\]
+</p>
+
+<p>
+For one query head, the attention score tensor has shape
+</p>
+
+<p>
+\[
+S\in\mathbb{R}^{B\times T\times T}.
+\]
+</p>
+
+<p>
+The prefill self-attention cost scales as
+</p>
+
+<p>
+\[
+O(BT^2dh).
+\]
+</p>
+
+<h3>4.2 Decode</h3>
+
+<p>
+In decode, the model generates one new token per sequence. The current query length is
+</p>
+
+<p>
+\[
+T_q=1.
+\]
+</p>
+
+<p>
+The current-step residual activation is
+</p>
+
+<p>
+\[
+X_{\ell,\mathrm{decode}}\in\mathbb{R}^{B\times 1\times H}.
+\]
+</p>
+
+<p>
+The current-step activation memory is
+</p>
+
+<p>
+\[
+\mathrm{Mem}_{\mathrm{decode-act}}=BHs.
+\]
+</p>
+
+<p>
+The KV cache for one decoder block is
+</p>
+
+<p>
+\[
+K,V\in\mathbb{R}^{B\times T\times H_{kv}},
+\]
+</p>
+
+<p>
+with memory
+</p>
+
+<p>
+\[
+\mathrm{Mem}_{\mathrm{KV,block}}=2BTH_{kv}s.
+\]
+</p>
+
+<p>
+Across \(L\) decoder blocks, the KV-cache memory is
+</p>
+
+<p>
+\[
+\mathrm{Mem}_{\mathrm{KV,total}}=2LBTH_{kv}s.
+\]
+</p>
+
+<div class="note">
+Prefill is sensitive to long-sequence activation and attention compute. Decode has small current-token activations, but KV-cache memory grows with \(B\), \(T\), \(H_{kv}\), and \(L\).
+</div>
+
+<h2>5. Decoder Block Mathematics</h2>
+
+<p>
+A pre-norm decoder block updates the residual stream as
+</p>
+
+<p>
+\[
+\widetilde{X}_\ell
+=
+X_\ell+
+\mathrm{SelfAttention}_\ell(\mathrm{RMSNorm}(X_\ell)),
+\]
+</p>
+
+<p>
+\[
+X_{\ell+1}
+=
+\widetilde{X}_\ell+
+\mathrm{MLP}_\ell(\mathrm{RMSNorm}(\widetilde{X}_\ell)).
+\]
+</p>
+
+<h3>5.1 Self-Attention Sublayer</h3>
+
+<p>
+For normalized input \(X\),
+</p>
+
+<p>
+\[
+Q=XW_Q,\qquad K=XW_K,\qquad V=XW_V.
+\]
+</p>
+
+<p>
+The masked attention scores are
+</p>
+
+<p>
+\[
+S=\frac{QK^\top}{\sqrt d}+M_{\mathrm{causal}}.
+\]
+</p>
+
+<p>
+The attention probabilities and attention output are
+</p>
+
+<p>
+\[
+P=\mathrm{softmax}(S),
+\qquad
+O=PV.
+\]
+</p>
+
+<p>
+The self-attention output projection is
+</p>
+
+<p>
+\[
+Y=OW_O.
+\]
+</p>
+
+<h3>5.2 MLP Sublayer</h3>
+
+<p>
+For a gated MLP,
+</p>
+
+<p>
+\[
+A=\phi(XW_g)\odot(XW_u).
+\]
+</p>
+
+<p>
+The down projection is
+</p>
+
+<p>
+\[
+Z=AW_d.
+\]
+</p>
+
+<p>
+The matrix shapes are
+</p>
+
+<p>
+\[
+W_g,W_u\in\mathbb{R}^{H\times I},
+\qquad
+W_d\in\mathbb{R}^{I\times H}.
+\]
+</p>
+
+<h2>6. Classic Tensor Parallelism</h2>
+
+<p>
+Classic tensor parallelism shards projection matrices while keeping the residual-stream activation replicated across all tensor-parallel ranks:
+</p>
+
+<p>
+\[
+X_r=X.
+\]
+</p>
+
+<h3>6.1 Self-Attention in Classic TP</h3>
+
+<p>
+The QKV projections are column-parallel:
+</p>
+
+<p>
+\[
+W_Q=[W_{Q,1},\dots,W_{Q,p}],
+\quad
+W_K=[W_{K,1},\dots,W_{K,p}],
+\quad
+W_V=[W_{V,1},\dots,W_{V,p}].
+\]
+</p>
+
+<p>
+Rank \(r\) computes
+</p>
+
+<p>
+\[
+Q_r=XW_{Q,r},
+\qquad
+K_r=XW_{K,r},
+\qquad
+V_r=XW_{V,r}.
+\]
+</p>
+
+<p>
+Each rank owns a subset of heads, so the attention computation is local to that head shard:
+</p>
+
+<p>
+\[
+S_r=\frac{Q_rK_r^\top}{\sqrt d}+M_{\mathrm{causal}},
+\]
+</p>
+
+<p>
+\[
+P_r=\mathrm{softmax}(S_r),
+\qquad
+O_r=P_rV_r.
+\]
+</p>
+
+<p>
+The output projection is row-parallel:
+</p>
+
+<p>
+\[
+W_O=
+\begin{bmatrix}
+W_{O,1}\\
+\vdots\\
+W_{O,p}
+\end{bmatrix}.
+\]
+</p>
+
+<p>
+Rank \(r\) computes a partial projected output:
+</p>
+
+<p>
+\[
+Y_r=O_rW_{O,r}.
+\]
+</p>
+
+<p>
+The full output is
+</p>
+
+<p>
+\[
+Y=\sum_{r=1}^{p}Y_r.
+\]
+</p>
+
+<p>
+Classic TP materializes \(Y\) on every TP rank using AllReduce:
+</p>
+
+<p>
+\[
+Y=\mathrm{AllReduce}_r(Y_r).
+\]
+</p>
+
+<h3>6.2 MLP in Classic TP</h3>
+
+<p>
+The gate and up projections are column-parallel:
+</p>
+
+<p>
+\[
+W_g=[W_{g,1},\dots,W_{g,p}],
+\qquad
+W_u=[W_{u,1},\dots,W_{u,p}].
+\]
+</p>
+
+<p>
+Rank \(r\) computes
+</p>
+
+<p>
+\[
+A_r=\phi(XW_{g,r})\odot(XW_{u,r}).
+\]
+</p>
+
+<p>
+The down projection is row-parallel:
+</p>
+
+<p>
+\[
+W_d=
+\begin{bmatrix}
+W_{d,1}\\
+\vdots\\
+W_{d,p}
+\end{bmatrix}.
+\]
+</p>
+
+<p>
+Rank \(r\) computes
+</p>
+
+<p>
+\[
+Z_r=A_rW_{d,r}.
+\]
+</p>
+
+<p>
+The full MLP output is
+</p>
+
+<p>
+\[
+Z=\sum_{r=1}^{p}Z_r
+=
+\mathrm{AllReduce}_r(Z_r).
+\]
+</p>
+
+<h2>7. Tensor Parallelism with Sharded Activations</h2>
+
+<p>
+Sharded-activation TP keeps the same weight partitioning as classic TP but avoids materializing the full residual
+activation on every rank after row-parallel projections. AllReduce is replaced by ReduceScatter.
+</p>
+
+<p>
+After the self-attention output projection:
+</p>
+
+<p>
+\[
+Y^{(q)}=\mathrm{ReduceScatter}_r(Y_r).
+\]
+</p>
+
+<p>
+After the MLP down projection:
+</p>
+
+<p>
+\[
+Z^{(q)}=\mathrm{ReduceScatter}_r(Z_r).
+\]
+</p>
+
+<p>
+The next decoder block consumes the sharded residual stream:
+</p>
+
+<p>
+\[
+X_{\ell+1}^{(q)}=Z_\ell^{(q)}.
+\]
+</p>
+
+<p>
+The activation shard \(q\) can be defined along the batch dimension or the sequence dimension. These two cases have
+different attention communication.
+</p>
+
+<h3>7.1 Batch-Sharded Activations</h3>
+
+<p>
+With batch-sharded activations,
+</p>
+
+<p>
+\[
+X^{(q)}\in\mathbb{R}^{B_q\times T\times H},
+\qquad
+B_q=\frac{B}{p}.
+\]
+</p>
+
+<p>
+Each shard contains complete sequences. Therefore, QKV tensors are local to those sequences:
+</p>
+
+<p>
+\[
+Q_r^{(q)}=X^{(q)}W_{Q,r},
+\qquad
+K_r^{(q)}=X^{(q)}W_{K,r},
+\qquad
+V_r^{(q)}=X^{(q)}W_{V,r}.
+\]
+</p>
+
+<p>
+Self-attention requires no cross-rank K/V exchange:
+</p>
+
+<p>
+\[
+O_r^{(q)}
+=
+\mathrm{softmax}
+\left(
+\frac{Q_r^{(q)}K_r^{(q)\top}}{\sqrt d}
++
+M_{\mathrm{causal}}
+\right)V_r^{(q)}.
+\]
+</p>
+
+<p>
+Row-parallel projections still require ReduceScatter:
+</p>
+
+<p>
+\[
+Y^{(q)}=\mathrm{ReduceScatter}_r(O_r^{(q)}W_{O,r}),
+\]
+</p>
+
+<p>
+\[
+Z^{(q)}=\mathrm{ReduceScatter}_r(A_r^{(q)}W_{d,r}).
+\]
+</p>
+
+<h3>7.2 Sequence-Sharded Activations</h3>
+
+<p>
+With sequence-sharded activations,
+</p>
+
+<p>
+\[
+X^{(q)}\in\mathbb{R}^{B\times T/p\times H}.
+\]
+</p>
+
+<p>
+Each shard contains only a contiguous subset of tokens from the same sequence. Local QKV projections are
+</p>
+
+<p>
+\[
+Q_r^{(q)}=X^{(q)}W_{Q,r},
+\qquad
+K_r^{(q)}=X^{(q)}W_{K,r},
+\qquad
+V_r^{(q)}=X^{(q)}W_{V,r}.
+\]
+</p>
+
+<p>
+A local query shard must attend over the complete context. Hence keys and values must be made visible across
+sequence shards:
+</p>
+
+<p>
+\[
+K_r=\mathrm{AllGather}_{\mathrm{seq}}(K_r^{(q)}),
+\qquad
+V_r=\mathrm{AllGather}_{\mathrm{seq}}(V_r^{(q)}).
+\]
+</p>
+
+<p>
+The local output rows are then computed as
+</p>
+
+<p>
+\[
+O_r^{(q)}
+=
+\mathrm{softmax}
+\left(
+\frac{Q_r^{(q)}K_r^\top}{\sqrt d}
++
+M_{\mathrm{causal}}^{(q)}
+\right)V_r.
+\]
+</p>
+
+<p>
+Queries are not gathered because shard \(q\) produces only the output rows for its local query tokens.
+</p>
+
+<p>
+The row-parallel projections are again completed with ReduceScatter:
+</p>
+
+<p>
+\[
+Y^{(q)}=\mathrm{ReduceScatter}_r(O_r^{(q)}W_{O,r}),
+\]
+</p>
+
+<p>
+\[
+Z^{(q)}=\mathrm{ReduceScatter}_r(A_r^{(q)}W_{d,r}).
+\]
+</p>
+
+<h2>8. Memory Analysis</h2>
+
+<table>
+    <tr>
+        <th>Execution model</th>
+        <th>Residual-stream activation per GPU</th>
+        <th>KV cache per GPU per decoder block</th>
+        <th>Attention-context exchange</th>
+    </tr>
+    <tr>
+        <td>Classic TP</td>
+        <td>\(BTHs\) bytes</td>
+        <td>\(\frac{2BTH_{kv}s}{p}\)</td>
+        <td>No</td>
+    </tr>
+    <tr>
+        <td>Sharded-activation TP, batch shard</td>
+        <td>\(\frac{BTHs}{p}\)</td>
+        <td>\(\frac{2BTH_{kv}s}{p}\)</td>
+        <td>No</td>
+    </tr>
+    <tr>
+        <td>Sharded-activation TP, sequence shard</td>
+        <td>\(\frac{BTHs}{p}\)</td>
+        <td>\(\frac{2BTH_{kv}s}{p}\)</td>
+        <td>Yes, K/V exchange</td>
+    </tr>
+</table>
+
+<h2>9. Communication Analysis</h2>
+
+<table>
+    <tr>
+        <th>Component</th>
+        <th>Classic TP</th>
+        <th>Batch-sharded activation TP</th>
+        <th>Sequence-sharded activation TP</th>
+    </tr>
+    <tr>
+        <td>QKV projections</td>
+        <td>Column-parallel, no collective</td>
+        <td>Column-parallel, no collective</td>
+        <td>Column-parallel, no collective</td>
+    </tr>
+    <tr>
+        <td>Self-attention core</td>
+        <td>No collective</td>
+        <td>No collective</td>
+        <td>\(\mathrm{AllGather}(K,V)\), \(2\frac{p-1}{p}M_{KV}s\) bytes</td>
+    </tr>
+    <tr>
+        <td>Attention output projection</td>
+        <td>\(\mathrm{AllReduce}\), \(2\frac{p-1}{p}M_Hs\) bytes</td>
+        <td>\(\mathrm{ReduceScatter}\), \(\frac{p-1}{p}M_Hs\) bytes</td>
+        <td>\(\mathrm{ReduceScatter}\), \(\frac{p-1}{p}M_Hs\) bytes</td>
+    </tr>
+    <tr>
+        <td>MLP gate/up projections</td>
+        <td>Column-parallel, no collective</td>
+        <td>Column-parallel, no collective</td>
+        <td>Column-parallel, no collective</td>
+    </tr>
+    <tr>
+        <td>MLP down projection</td>
+        <td>\(\mathrm{AllReduce}\), \(2\frac{p-1}{p}M_Hs\) bytes</td>
+        <td>\(\mathrm{ReduceScatter}\), \(\frac{p-1}{p}M_Hs\) bytes</td>
+        <td>\(\mathrm{ReduceScatter}\), \(\frac{p-1}{p}M_Hs\) bytes</td>
+    </tr>
+</table>
+
+<h2>10. Summary</h2>
+
+<p>
+Classic tensor parallelism shards projection matrices but replicates residual-stream activations after row-parallel
+projections. Sharded-activation tensor parallelism replaces those AllReduce operations with ReduceScatter and keeps
+the residual stream partitioned across ranks. With batch-sharded activations, complete sequences remain local and
+self-attention requires no K/V exchange. With sequence-sharded activations, one context is split across ranks, so
+the self-attention sublayer requires global K/V visibility through AllGather or an equivalent distributed-attention
+algorithm.
+</p>
+
+<footer>
+    <p>&copy; 2026. All rights reserved.</p>
+</footer>
+
+</body>
+</html>
