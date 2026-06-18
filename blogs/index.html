@@ -70,42 +70,42 @@
 <body>
 
 <h1>Blog Index</h1>
-<p style="text-align: center;">Welcome to the blog! Here, we delve into advanced optimization techniques to maximize algorithm performance on high-performance computing systems. Explore topics ranging from SIMD vectorization to parallel algorithms tailored for cutting-edge architectures.</p>
+<p style="text-align: center;">A collection of articles on algorithms and computational techniques in Artificial Intelligence (AI), Parallel Computing, and Computational Genomics.</p>
 
 <ul>
     <li>
-        <a href="mat_mul_cpu.html">1) Optimization Techniques for Matrix Multiplication on CPUs</a>
+        <a href="tensor_parallelism.html">1) A Beginner's Guide to Tensor Parallelism in Autoregressive LLM Inference </a>
+        <p>This blog introduces the concept of tensor parallelism in the context of autoregressive large language model (LLM) inference. It covers the basics of distributing tensor computations across multiple GPUs to accelerate model inference.</p>
+    </li>
+
+    <li>
+        <a href="mat_mul_cpu.html">2) Optimization Techniques for Matrix Multiplication on CPUs</a>
         <p>A deep dive into various optimization techniques for matrix multiplication, including tiling, loop unrolling, parallelization, and AVX-512 SIMD on modern CPUs.</p>
     </li>
     <li>
-        <a href="mat_mul_gpu.html">2) Optimization Techniques for Matrix Multiplication on GPUs</a>
-        <p>A Deep Dive into Matrix Multiplication on A100 GPUs: Exploring Naive, Shared Memory, and WMMA Tensor Core Approaches.</p>
+        <a href="mat_mul_gpu.html">3) Optimization Techniques for Matrix Multiplication on GPUs</a>
+        <p>A deep dive into matrix multiplication on A100 GPUs, exploring naive, shared memory, and WMMA tensor core approaches.</p>
     </li>
     <li>
-        <a href="roofline.html">3) Roofline Analysis of Matrix Multiplication</a>
+        <a href="roofline.html">4) Roofline Analysis of Matrix Multiplication</a>
         <p>We explore the roofline analysis of matrix multiplication. The roofline plot provides insights into whether a program is memory-bound (limited by data transfer rate) or compute-bound (limited by available computational throughput).</p>
     </li>
     <li>
-        <a href="par_NW.html">4) Parallel Needleman-Wunsch Algorithm</a>
+        <a href="par_NW.html">5) Parallel Needleman-Wunsch Algorithm</a>
         <p>We explore the anti-diagonal parallelization technique for the Needleman-Wunsch algorithm.</p>
     </li>
     <li>
-        <a href="prefix_sums_gpu.html">5) Understanding GPU Programming on NVIDIA A100 GPUs with Parallel Prefix Sums</a>
+        <a href="prefix_sums_gpu.html">6) Understanding GPU Programming on NVIDIA A100 GPUs with Parallel Prefix Sums</a>
         <p>This blog explores the fundamentals of GPU programming using parallel prefix sums as a case study. It demonstrates various CUDA implementations, including naive, shared memory, and dynamic parallelism, highlighting the performance benefits of efficient memory management and GPU architecture on NVIDIA A100 GPUs.</p>
     </li>
     <li>
-        <a href="par_nw_heu.html">6) Heuristic-Based Parallel Needleman-Wunsch Algorithm </a>
+        <a href="par_nw_heu.html">7) Heuristic-Based Parallel Needleman-Wunsch Algorithm </a>
         <p>This blog introduces a heuristic-based parallelization strategy for the Needleman-Wunsch (NW) algorithm, a cornerstone of bioinformatics used for global sequence alignment. Traditionally, the NW algorithm faces challenges in parallelization due to its sequential dependencies in dynamic programming computations. The proposed heuristic employs iterative dynamic programming with chunk-based computations, overlapping boundaries, and iterative updates, achieving both correctness and scalability.</p>
     </li>
     <!-- <li>
-        <a href="WFA_cpu.html">7) Accelerating Edit Distance Computation with Wavefront Alignment and AVX-512 </a>
+        <a href="WFA_cpu.html">8) Accelerating Edit Distance Computation with Wavefront Alignment and AVX-512 </a>
         <p>This blog explores the Wavefront Alignment algorithm for efficient edit distance computation and demonstrates how AVX-512 vectorization accelerates performance. Experimental results highlight significant runtime improvements on large DNA sequences.</p>
     </li> -->
-
-    <li>
-        <a href="tensor_parallelism.html">7) A Beginner's Guide to Tensor Parallelism in Autoregressive LLM Inference </a>
-        <p>This blog introduces the concept of tensor parallelism in the context of autoregressive large language model (LLM) inference. It covers the basics of distributing tensor computations across multiple GPUs to accelerate model inference.</p>
-    </li>
 </ul>
 
 </body>
