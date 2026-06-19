@@ -1,0 +1,1305 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>A Beginner's Guide to Tensor Parallelism + Expert Parallelism in MoE LLM Inference</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async
+            src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+    </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.62;
+            max-width: 980px;
+            margin: 0 auto;
+            padding: 22px;
+            color: #111;
+        }
+        h1, h2, h3 {
+            line-height: 1.25;
+        }
+        h1 {
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            color: #444;
+            font-size: 1.05em;
+            margin-top: 0;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border: 1px solid #ddd;
+            overflow-x: auto;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 18px 0;
+            font-size: 0.94em;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 8px;
+            vertical-align: top;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .note {
+            background: #fff8dc;
+            border-left: 4px solid #d6a600;
+            padding: 10px;
+            margin: 12px 0;
+        }
+        .highlight {
+            background: #f0fff4;
+            border-left: 4px solid #38a169;
+            padding: 10px;
+            margin: 12px 0;
+        }
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 0.9em;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+
+<h1>A Beginner's Guide to Tensor Parallelism + Expert Parallelism in MoE LLM Inference</h1>
+<p class="subtitle">
+</p>
+
+<h2>1. Motivation</h2>
+
+<p>
+Autoregressive large language models are dominated by dense linear algebra in every decoder block. In a dense
+transformer, every token passes through every parameter of the attention projections and every parameter of the MLP
+sublayer. Scaling the dense model therefore increases both model capacity and per-token compute.
+</p>
+
+<p>
+This is powerful, but expensive. If a dense model has \(N_{\mathrm{params}}\) parameters, then, ignoring embeddings
+and normalization, the amount of work per generated token grows roughly with \(N_{\mathrm{params}}\). A larger dense
+model can improve quality, but every token must pay for the whole model.
+</p>
+
+<h3>1.1 Why Dense Models Are Not Enough</h3>
+
+<p>
+Dense models are simple and hardware-friendly, but they have a basic scaling bottleneck:
+</p>
+
+<p>
+\[
+\text{capacity per token}
+=
+\text{parameters evaluated per token}.
+\]
+</p>
+
+<p>
+If we make the MLPs larger, the model becomes more expressive, but every token becomes more expensive. If we add
+more layers, the model becomes deeper, but every token must traverse those layers. For inference, this hurts latency,
+throughput, memory footprint, and serving cost.
+</p>
+
+<p>
+Mixture-of-Experts, or MoE, changes this tradeoff. Instead of using one dense MLP for every token, an MoE layer
+contains \(E\) expert MLPs and a router. For each token, the router selects only \(k\) experts, where typically
+</p>
+
+<p>
+\[
+k \ll E.
+\]
+</p>
+
+<p>
+The model can therefore increase total parameter capacity by increasing \(E\), while keeping per-token expert
+compute controlled by \(k\).
+</p>
+
+<div class="note">
+For fixed \(k\), increasing the number of experts \(E\) increases total model capacity, but does not increase the
+number of experts evaluated by each token. This is the main reason MoE is attractive for very large LLMs.
+</div>
+
+<h3>1.2 Why Tensor Parallelism and Expert Parallelism Are Used Together</h3>
+
+<p>
+Tensor parallelism, or TP, partitions large dense matrix multiplications across GPUs. It is useful for attention
+projections, output projections, and dense MLP projections.
+</p>
+
+<p>
+Expert parallelism, or EP, partitions experts across GPUs. It is useful when the MoE layer has many experts and no
+single GPU should store all of them.
+</p>
+
+<p>
+In this article, we study a single group of \(p\) GPUs. Dense attention is tensor-parallel across these \(p\) GPUs.
+The MoE experts are expert-parallel across the same \(p\) GPUs:
+</p>
+
+<p>
+\[
+E \bmod p = 0,
+\qquad
+E_p = \frac{E}{p}.
+\]
+</p>
+
+<p>
+Each GPU stores exactly \(E_p\) experts.
+</p>
+
+<div class="note">
+This article uses TP for the dense attention part and EP for the MoE expert part over the same \(p\) GPUs.
+The experts themselves are not additionally tensor-parallel. If each expert is also tensor-parallel, then one should
+introduce two separate degrees, for example \(t\) for TP and \(e\) for EP, with total GPUs \(p=te\).
+</div>
+
+<h2>2. Notation</h2>
+
+<table>
+    <tr><th>Symbol</th><th>Definition</th></tr>
+    <tr><td>\(B\)</td><td>Global batch size: number of independent autoregressive sequences.</td></tr>
+    <tr><td>\(T\)</td><td>Context length or sequence length.</td></tr>
+    <tr><td>\(T_q\)</td><td>Query length. In decode, \(T_q=1\).</td></tr>
+    <tr><td>\(N_t\)</td><td>Number of tokens entering an MoE layer. In prefill, \(N_t=BT\). In decode, \(N_t=B\).</td></tr>
+    <tr><td>\(H\)</td><td>Residual-stream hidden dimension.</td></tr>
+    <tr><td>\(I\)</td><td>Intermediate dimension of one dense MLP or one expert MLP.</td></tr>
+    <tr><td>\(L\)</td><td>Number of decoder blocks.</td></tr>
+    <tr><td>\(\ell\)</td><td>Decoder-block index.</td></tr>
+    <tr><td>\(p\)</td><td>Number of GPUs in the TP+EP group.</td></tr>
+    <tr><td>\(r\)</td><td>GPU/rank index, \(r\in\{1,\dots,p\}\).</td></tr>
+    <tr><td>\(E\)</td><td>Total number of experts in one MoE layer.</td></tr>
+    <tr><td>\(E_p\)</td><td>Experts stored per GPU, \(E_p=E/p\).</td></tr>
+    <tr><td>\(e\)</td><td>Expert index, \(e\in\{1,\dots,E\}\).</td></tr>
+    <tr><td>\(k\)</td><td>Top-\(k\) routing degree: number of experts selected per token.</td></tr>
+    <tr><td>\(\gamma\)</td><td>Capacity or padding factor for expert buffers. If there is no padding, \(\gamma=1\).</td></tr>
+    <tr><td>\(G\)</td><td>Router logits.</td></tr>
+    <tr><td>\(R(x)\)</td><td>Set of selected experts for token \(x\).</td></tr>
+    <tr><td>\(\alpha_{i,e}\)</td><td>Router combine weight for token \(i\) and expert \(e\).</td></tr>
+    <tr><td>\(f_e\)</td><td>Expert MLP function for expert \(e\).</td></tr>
+    <tr><td>\(X_\ell\)</td><td>Residual-stream activation entering decoder block \(\ell\).</td></tr>
+    <tr><td>\(\widetilde{X}_\ell\)</td><td>Residual stream after self-attention.</td></tr>
+    <tr><td>\(Y\)</td><td>Self-attention output after the output projection.</td></tr>
+    <tr><td>\(Z\)</td><td>MoE output.</td></tr>
+    <tr><td>\(Q,K,V\)</td><td>Query, key, and value tensors.</td></tr>
+    <tr><td>\(S\)</td><td>Attention score tensor before softmax.</td></tr>
+    <tr><td>\(P\)</td><td>Attention probability tensor after softmax.</td></tr>
+    <tr><td>\(O\)</td><td>Self-attention output before the output projection.</td></tr>
+    <tr><td>\(h\)</td><td>Number of query heads.</td></tr>
+    <tr><td>\(h_{kv}\)</td><td>Number of key/value heads.</td></tr>
+    <tr><td>\(d\)</td><td>Per-head dimension.</td></tr>
+    <tr><td>\(H_q\)</td><td>Total query projection dimension, \(H_q=hd\).</td></tr>
+    <tr><td>\(H_{kv}\)</td><td>Total key/value projection dimension, \(H_{kv}=h_{kv}d\).</td></tr>
+    <tr><td>\(s\)</td><td>Bytes per scalar element. For BF16 or FP16, \(s=2\).</td></tr>
+    <tr><td>\(M_H\)</td><td>Number of scalar elements in one full hidden activation tensor, \(M_H=BTH=N_tH\).</td></tr>
+    <tr><td>\(M_{KV}\)</td><td>Number of scalar elements in one full key or value tensor, \(M_{KV}=BTH_{kv}\).</td></tr>
+</table>
+
+<h2>3. Communication Model</h2>
+
+<h3>3.1 Assumptions</h3>
+
+<p>
+The communication formulas in this article count bytes communicated per rank. They ignore latency, kernel launch
+overhead, network contention, topology effects, routing metadata, token indices, and router combine weights.
+</p>
+
+<p>
+We assume bandwidth-optimal collective implementations:
+</p>
+
+<ul>
+    <li>For large AllReduce operations, we assume a ring AllReduce, equivalently a ReduceScatter followed by an AllGather.</li>
+    <li>For ReduceScatter and AllGather, we use the standard bandwidth-optimal ring volume.</li>
+    <li>For AllToAll, we assume a balanced pairwise exchange where each rank sends an equal amount of data to every other rank.</li>
+</ul>
+
+<p>
+For small messages, implementations may use recursive-doubling, recursive-halving, tree-based, or topology-aware
+algorithms to reduce latency. Those choices change the latency term and step count, but the volume formulas below
+are the bandwidth model used for the rest of the article.
+</p>
+
+<div class="note">
+The model is a payload-volume model, not an end-to-end performance model. In practice, AllToAll can be slower than
+its byte count suggests because it creates many peer-to-peer exchanges and is sensitive to load imbalance.
+</div>
+
+<h3>3.2 AllReduce, ReduceScatter, and AllGather</h3>
+
+<p>
+Let \(N\) be the number of scalar elements in the full tensor involved in the collective, and let \(s\) be the number
+of bytes per scalar.
+</p>
+
+<p>
+For AllGather:
+</p>
+
+<p>
+\[
+C_{AG}(N,p)=\frac{p-1}{p}Ns.
+\]
+</p>
+
+<p>
+For ReduceScatter:
+</p>
+
+<p>
+\[
+C_{RS}(N,p)=\frac{p-1}{p}Ns.
+\]
+</p>
+
+<p>
+For ring AllReduce:
+</p>
+
+<p>
+\[
+C_{AR}(N,p)=2\frac{p-1}{p}Ns.
+\]
+</p>
+
+<p>
+The factor of \(2\) appears because ring AllReduce is composed of a ReduceScatter phase and an AllGather phase.
+</p>
+
+<h3>3.3 AllToAll</h3>
+
+<p>
+Expert parallelism uses AllToAll. The most readable way to write AllToAll communication is in terms of the local
+payload per rank.
+</p>
+
+<p>
+Let \(N_{\mathrm{local}}\) be the number of scalar elements initially owned by one rank before the AllToAll.
+Under balanced traffic, the fraction \((p-1)/p\) goes to remote ranks. Therefore,
+</p>
+
+<p>
+\[
+C_{A2A}(N_{\mathrm{local}},p)
+=
+\frac{p-1}{p}N_{\mathrm{local}}s.
+\]
+</p>
+
+<p>
+If \(N_{\mathrm{global}}\) is the total payload across all ranks, then \(N_{\mathrm{local}}=N_{\mathrm{global}}/p\), so
+</p>
+
+<p>
+\[
+C_{A2A}
+=
+\frac{p-1}{p}\left(\frac{N_{\mathrm{global}}}{p}\right)s.
+\]
+</p>
+
+<p>
+In the rest of the article, we use the local-payload form because it is easier to compare with what each GPU actually
+sends.
+</p>
+
+<h2>4. Autoregressive Inference Phases</h2>
+
+<h3>4.1 Prefill</h3>
+
+<p>
+In prefill, the full prompt is processed:
+</p>
+
+<p>
+\[
+X_\ell\in\mathbb{R}^{B\times T\times H}.
+\]
+</p>
+
+<p>
+The number of MoE input tokens is
+</p>
+
+<p>
+\[
+N_t=BT.
+\]
+</p>
+
+<p>
+The hidden activation size is
+</p>
+
+<p>
+\[
+M_H=BTH.
+\]
+</p>
+
+<h3>4.2 Decode</h3>
+
+<p>
+In decode, the model generates one new token per sequence. The query length is
+</p>
+
+<p>
+\[
+T_q=1.
+\]
+</p>
+
+<p>
+The current-step residual activation is
+</p>
+
+<p>
+\[
+X_{\ell,\mathrm{decode}}\in\mathbb{R}^{B\times 1\times H}.
+\]
+</p>
+
+<p>
+The number of MoE input tokens is
+</p>
+
+<p>
+\[
+N_t=B.
+\]
+</p>
+
+<p>
+The current-step hidden activation size is
+</p>
+
+<p>
+\[
+M_H=BH.
+\]
+</p>
+
+<p>
+The KV cache for one decoder block is
+</p>
+
+<p>
+\[
+K,V\in\mathbb{R}^{B\times T\times H_{kv}},
+\]
+</p>
+
+<p>
+with memory
+</p>
+
+<p>
+\[
+\mathrm{Mem}_{\mathrm{KV,block}}=2BTH_{kv}s.
+\]
+</p>
+
+<div class="note">
+Prefill is sensitive to long-sequence activation and attention compute. Decode has small current-token activations,
+but KV-cache memory grows with \(B\), \(T\), \(H_{kv}\), and \(L\).
+</div>
+
+<h2>5. Decoder Block with an MoE Sublayer</h2>
+
+<p>
+A pre-norm decoder block with MoE updates the residual stream as
+</p>
+
+<p>
+\[
+\widetilde{X}_\ell
+=
+X_\ell+
+\mathrm{SelfAttention}_\ell(\mathrm{RMSNorm}(X_\ell)),
+\]
+</p>
+
+<p>
+\[
+X_{\ell+1}
+=
+\widetilde{X}_\ell+
+\mathrm{MoE}_\ell(\mathrm{RMSNorm}(\widetilde{X}_\ell)).
+\]
+</p>
+
+<h3>5.1 Self-Attention Sublayer</h3>
+
+<p>
+For normalized input \(X\),
+</p>
+
+<p>
+\[
+Q=XW_Q,\qquad K=XW_K,\qquad V=XW_V.
+\]
+</p>
+
+<p>
+The masked attention scores are
+</p>
+
+<p>
+\[
+S=\frac{QK^\top}{\sqrt d}+M_{\mathrm{causal}}.
+\]
+</p>
+
+<p>
+The attention probabilities and attention output are
+</p>
+
+<p>
+\[
+P=\mathrm{softmax}(S),
+\qquad
+O=PV.
+\]
+</p>
+
+<p>
+The self-attention output projection is
+</p>
+
+<p>
+\[
+Y=OW_O.
+\]
+</p>
+
+<h3>5.2 MoE Sublayer</h3>
+
+<p>
+Flatten the token dimensions:
+</p>
+
+<p>
+\[
+X_{\mathrm{tok}}\in\mathbb{R}^{N_t\times H}.
+\]
+</p>
+
+<p>
+The router computes
+</p>
+
+<p>
+\[
+G=X_{\mathrm{tok}}W_{\mathrm{router}},
+\qquad
+W_{\mathrm{router}}\in\mathbb{R}^{H\times E}.
+\]
+</p>
+
+<p>
+For token \(x_i\), the router selects
+</p>
+
+<p>
+\[
+R(x_i)=\operatorname{TopK}(G_i,k).
+\]
+</p>
+
+<p>
+The MoE output for token \(i\) is
+</p>
+
+<p>
+\[
+z_i
+=
+\sum_{e\in R(x_i)}
+\alpha_{i,e} f_e(x_i),
+\qquad
+\sum_{e\in R(x_i)}\alpha_{i,e}=1.
+\]
+</p>
+
+<p>
+Each expert is a gated MLP:
+</p>
+
+<p>
+\[
+f_e(x)
+=
+W_{d,e}
+\left(
+\phi(xW_{g,e})\odot xW_{u,e}
+\right),
+\]
+</p>
+
+<p>
+where
+</p>
+
+<p>
+\[
+W_{g,e},W_{u,e}\in\mathbb{R}^{H\times I},
+\qquad
+W_{d,e}\in\mathbb{R}^{I\times H}.
+\]
+</p>
+
+<h2>6. Tensor-Parallel Attention on \(p\) GPUs</h2>
+
+<p>
+The dense self-attention part uses classic tensor parallelism. The residual activation is replicated across the
+\(p\) tensor-parallel ranks:
+</p>
+
+<p>
+\[
+X_r=X.
+\]
+</p>
+
+<p>
+The QKV projections are column-parallel:
+</p>
+
+<p>
+\[
+W_Q=[W_{Q,1},\dots,W_{Q,p}],
+\quad
+W_K=[W_{K,1},\dots,W_{K,p}],
+\quad
+W_V=[W_{V,1},\dots,W_{V,p}].
+\]
+</p>
+
+<p>
+Rank \(r\) computes
+</p>
+
+<p>
+\[
+Q_r=XW_{Q,r},
+\qquad
+K_r=XW_{K,r},
+\qquad
+V_r=XW_{V,r}.
+\]
+</p>
+
+<p>
+Each rank owns a subset of attention heads, so the attention core is local:
+</p>
+
+<p>
+\[
+O_r
+=
+\mathrm{softmax}
+\left(
+\frac{Q_rK_r^\top}{\sqrt d}
++
+M_{\mathrm{causal}}
+\right)V_r.
+\]
+</p>
+
+<p>
+The output projection is row-parallel:
+</p>
+
+<p>
+\[
+W_O=
+\begin{bmatrix}
+W_{O,1}\\
+\vdots\\
+W_{O,p}
+\end{bmatrix}.
+\]
+</p>
+
+<p>
+Rank \(r\) computes a partial projected output:
+</p>
+
+<p>
+\[
+Y_r=O_rW_{O,r}.
+\]
+</p>
+
+<p>
+The full self-attention output is
+</p>
+
+<p>
+\[
+Y=\sum_{r=1}^{p}Y_r
+=
+\mathrm{AllReduce}_r(Y_r).
+\]
+</p>
+
+<p>
+Thus the attention-output communication per rank is
+</p>
+
+<p>
+\[
+C_{\mathrm{attn}}
+=
+C_{AR}(M_H,p)
+=
+2\frac{p-1}{p}M_Hs.
+\]
+</p>
+
+<h2>7. Expert-Parallel MoE on \(p\) GPUs</h2>
+
+<h3>7.1 Expert Placement</h3>
+
+<p>
+Assume
+</p>
+
+<p>
+\[
+E \bmod p=0.
+\]
+</p>
+
+<p>
+Each rank stores
+</p>
+
+<p>
+\[
+E_p=\frac{E}{p}
+\]
+</p>
+
+<p>
+experts. One simple contiguous placement is
+</p>
+
+<p>
+\[
+\mathcal{E}_r
+=
+\{(r-1)E_p+1,\dots,rE_p\}.
+\]
+</p>
+
+<p>
+The rank that owns expert \(e\) is
+</p>
+
+<p>
+\[
+\operatorname{owner}(e)
+=
+1+
+\left\lfloor
+\frac{e-1}{E_p}
+\right\rfloor.
+\]
+</p>
+
+<h3>7.2 Token Ownership Before Dispatch</h3>
+
+<p>
+After tensor-parallel attention, the activation is replicated. Before expert execution, each token should have a
+unique source rank; otherwise the expert work would be duplicated on every TP rank.
+</p>
+
+<p>
+We assign a deterministic token shard to rank \(r\):
+</p>
+
+<p>
+\[
+X_{\mathrm{tok}}^{(r)}
+\in
+\mathbb{R}^{(N_t/p)\times H}.
+\]
+</p>
+
+<p>
+This slicing is local because each rank already has the replicated activation.
+</p>
+
+<h3>7.3 Dispatch</h3>
+
+<p>
+For every local token \(x_i\), the router selects \(k\) experts. Each selected expert creates one token-expert
+assignment. Globally, the number of token-expert assignments is
+</p>
+
+<p>
+\[
+kN_t.
+\]
+</p>
+
+<p>
+The local dispatch payload on each rank is
+</p>
+
+<p>
+\[
+N_{\mathrm{dispatch,local}}
+=
+\gamma k\frac{N_t}{p}H
+=
+\gamma k\frac{M_H}{p}.
+\]
+</p>
+
+<p>
+Here \(\gamma\geq 1\) models capacity padding or load-balancing slack. With no padding, \(\gamma=1\).
+</p>
+
+<p>
+Dispatch is an AllToAll:
+</p>
+
+<p>
+\[
+X_{\mathrm{expert}}
+=
+\mathrm{AllToAll}(X_{\mathrm{tok}}).
+\]
+</p>
+
+<p>
+The per-rank dispatch communication is
+</p>
+
+<p>
+\[
+C_{\mathrm{dispatch}}
+=
+\frac{p-1}{p}
+\left(
+\gamma k\frac{M_H}{p}
+\right)s.
+\]
+</p>
+
+<h3>7.4 Local Expert Computation</h3>
+
+<p>
+Under balanced routing, each expert receives approximately
+</p>
+
+<p>
+\[
+\frac{kN_t}{E}
+\]
+</p>
+
+<p>
+tokens, and each GPU receives approximately
+</p>
+
+<p>
+\[
+E_p\cdot \frac{kN_t}{E}
+=
+\frac{kN_t}{p}
+\]
+</p>
+
+<p>
+token-expert assignments.
+</p>
+
+<p>
+Rank \(r\) applies only its local experts:
+</p>
+
+<p>
+\[
+u_{i,e}=f_e(x_i),
+\qquad
+e\in\mathcal{E}_r.
+\]
+</p>
+
+<p>
+The expert compute grows with \(k\), not directly with \(E\). For fixed \(k\), increasing \(E\) increases total expert
+capacity without increasing the number of expert MLPs evaluated per token.
+</p>
+
+<h3>7.5 Combine</h3>
+
+<p>
+After local expert execution, expert outputs are sent back to the original token owners:
+</p>
+
+<p>
+\[
+U_{\mathrm{return}}
+=
+\mathrm{AllToAll}(U_{\mathrm{expert}}).
+\]
+</p>
+
+<p>
+The local combine payload has the same size as the local dispatch payload:
+</p>
+
+<p>
+\[
+N_{\mathrm{combine,local}}
+=
+\gamma k\frac{M_H}{p}.
+\]
+</p>
+
+<p>
+Thus
+</p>
+
+<p>
+\[
+C_{\mathrm{combine}}
+=
+\frac{p-1}{p}
+\left(
+\gamma k\frac{M_H}{p}
+\right)s.
+\]
+</p>
+
+<p>
+Each source rank combines the returned expert outputs:
+</p>
+
+<p>
+\[
+z_i
+=
+\sum_{e\in R(x_i)}
+\alpha_{i,e}u_{i,e}.
+\]
+</p>
+
+<p>
+At this point, the MoE output is token-sharded:
+</p>
+
+<p>
+\[
+Z^{(r)}
+\in
+\mathbb{R}^{(N_t/p)\times H}.
+\]
+</p>
+
+<h3>7.6 Restoring Replicated TP State</h3>
+
+<p>
+Classic TP expects the next block input to be replicated across all TP ranks. Therefore, after the MoE combine, we
+AllGather the token-sharded MoE output:
+</p>
+
+<p>
+\[
+Z=\mathrm{AllGather}(Z^{(r)}).
+\]
+</p>
+
+<p>
+The communication cost is
+</p>
+
+<p>
+\[
+C_{\mathrm{restore}}
+=
+C_{AG}(M_H,p)
+=
+\frac{p-1}{p}M_Hs.
+\]
+</p>
+
+<p>
+Then each rank can form the replicated residual output:
+</p>
+
+<p>
+\[
+X_{\ell+1}
+=
+\widetilde{X}_\ell+Z.
+\]
+</p>
+
+<div class="note">
+If the implementation keeps token-sharded activations across blocks, this restore AllGather can be moved or avoided.
+For the classic TP convention used here, it is included explicitly.
+</div>
+
+<h2>8. Communication Analysis</h2>
+
+<h3>8.1 Per-Layer TP+EP Communication</h3>
+
+<p>
+For one decoder block with tensor-parallel attention and expert-parallel MoE:
+</p>
+
+<table>
+    <tr>
+        <th>Component</th>
+        <th>Collective</th>
+        <th>Per-rank communication volume</th>
+    </tr>
+    <tr>
+        <td>QKV projections</td>
+        <td>None</td>
+        <td>\(0\)</td>
+    </tr>
+    <tr>
+        <td>Attention core</td>
+        <td>None, assuming heads are partitioned cleanly</td>
+        <td>\(0\)</td>
+    </tr>
+    <tr>
+        <td>Attention output projection</td>
+        <td>Ring AllReduce</td>
+        <td>\(2\frac{p-1}{p}M_Hs\)</td>
+    </tr>
+    <tr>
+        <td>MoE dispatch</td>
+        <td>Balanced AllToAll</td>
+        <td>\(\frac{p-1}{p}\left(\gamma k\frac{M_H}{p}\right)s\)</td>
+    </tr>
+    <tr>
+        <td>Local experts</td>
+        <td>None</td>
+        <td>\(0\)</td>
+    </tr>
+    <tr>
+        <td>MoE combine</td>
+        <td>Balanced AllToAll</td>
+        <td>\(\frac{p-1}{p}\left(\gamma k\frac{M_H}{p}\right)s\)</td>
+    </tr>
+    <tr>
+        <td>Restore replicated TP state</td>
+        <td>Ring AllGather</td>
+        <td>\(\frac{p-1}{p}M_Hs\)</td>
+    </tr>
+</table>
+
+<p>
+Therefore, the total per-rank communication volume is
+</p>
+
+<p>
+\[
+C_{\mathrm{TP+EP}}
+=
+2\frac{p-1}{p}M_Hs
++
+2\frac{p-1}{p}
+\left(
+\gamma k\frac{M_H}{p}
+\right)s
++
+\frac{p-1}{p}M_Hs.
+\]
+</p>
+
+<p>
+Equivalently,
+</p>
+
+<p>
+\[
+C_{\mathrm{TP+EP}}
+=
+3\frac{p-1}{p}M_Hs
++
+2\frac{p-1}{p}
+\left(
+\gamma k\frac{M_H}{p}
+\right)s.
+\]
+</p>
+
+<h3>8.2 Comparison with Dense TP</h3>
+
+<p>
+A dense transformer block with classic TP has two row-parallel output reductions: one after attention and one after
+the dense MLP down projection.
+</p>
+
+<table>
+    <tr>
+        <th>Model</th>
+        <th>Attention communication</th>
+        <th>MLP / MoE communication</th>
+        <th>Total per-rank communication</th>
+    </tr>
+    <tr>
+        <td>Dense TP block</td>
+        <td>\(2\frac{p-1}{p}M_Hs\)</td>
+        <td>\(2\frac{p-1}{p}M_Hs\)</td>
+        <td>\(4\frac{p-1}{p}M_Hs\)</td>
+    </tr>
+    <tr>
+        <td>TP + EP MoE block</td>
+        <td>\(2\frac{p-1}{p}M_Hs\)</td>
+        <td>\(2\frac{p-1}{p}\left(\gamma k\frac{M_H}{p}\right)s+\frac{p-1}{p}M_Hs\)</td>
+        <td>\(3\frac{p-1}{p}M_Hs+2\frac{p-1}{p}\left(\gamma k\frac{M_H}{p}\right)s\)</td>
+    </tr>
+</table>
+
+<p>
+This comparison is only about communication volume. It does not imply that MoE is always faster. AllToAll can be
+more latency-sensitive and topology-sensitive than AllReduce, and expert imbalance can create stragglers.
+</p>
+
+<h3>8.3 Prefill vs Decode</h3>
+
+<p>
+In prefill,
+</p>
+
+<p>
+\[
+N_t=BT,
+\qquad
+M_H=BTH.
+\]
+</p>
+
+<p>
+In decode,
+</p>
+
+<p>
+\[
+N_t=B,
+\qquad
+M_H=BH.
+\]
+</p>
+
+<p>
+Thus the MoE dispatch and combine payloads are much smaller during decode than during long-context prefill. However,
+decode latency may still be sensitive to AllToAll startup costs because the message sizes are small.
+</p>
+
+<h2>9. Memory Analysis</h2>
+
+<h3>9.1 Expert Parameters</h3>
+
+<p>
+One gated expert has parameter count
+</p>
+
+<p>
+\[
+P_{\mathrm{expert}}
+=
+3HI,
+\]
+</p>
+
+<p>
+ignoring bias terms.
+</p>
+
+<p>
+The full MoE layer has
+</p>
+
+<p>
+\[
+P_{\mathrm{MoE}}
+=
+3EHI
+\]
+</p>
+
+<p>
+expert parameters. Since experts are partitioned across \(p\) GPUs, the expert parameters per GPU are
+</p>
+
+<p>
+\[
+P_{\mathrm{MoE,GPU}}
+=
+\frac{3EHI}{p}.
+\]
+</p>
+
+<p>
+The number of activated expert parameters per token is
+</p>
+
+<p>
+\[
+P_{\mathrm{active/token}}
+=
+3kHI.
+\]
+</p>
+
+<div class="highlight">
+The key MoE scaling property is
+\[
+P_{\mathrm{MoE}}\propto E,
+\qquad
+P_{\mathrm{active/token}}\propto k.
+\]
+For fixed \(k\), capacity grows with \(E\), but active expert compute does not.
+</div>
+
+<h3>9.2 Activation and Buffer Memory</h3>
+
+<p>
+The replicated residual activation costs
+</p>
+
+<p>
+\[
+M_Hs=BTHs
+\]
+</p>
+
+<p>
+bytes per GPU in classic TP.
+</p>
+
+<p>
+During expert execution, each GPU holds approximately
+</p>
+
+<p>
+\[
+\frac{\gamma kN_t}{p}
+\]
+</p>
+
+<p>
+token-expert assignments. The expert input buffer therefore costs approximately
+</p>
+
+<p>
+\[
+\mathrm{Mem}_{\mathrm{expert\ buffer}}
+=
+\frac{\gamma kN_tH}{p}s
+=
+\frac{\gamma kM_H}{p}s.
+\]
+</p>
+
+<p>
+The output buffer has the same order of memory.
+</p>
+
+<h3>9.3 KV Cache</h3>
+
+<p>
+With TP-sharded attention heads, the per-block KV cache per GPU is approximately
+</p>
+
+<p>
+\[
+\mathrm{Mem}_{\mathrm{KV,block,GPU}}
+=
+\frac{2BTH_{kv}s}{p},
+\]
+</p>
+
+<p>
+assuming the key/value heads are partitioned evenly across ranks. Across \(L\) decoder blocks:
+</p>
+
+<p>
+\[
+\mathrm{Mem}_{\mathrm{KV,total,GPU}}
+=
+\frac{2LBTH_{kv}s}{p}.
+\]
+</p>
+
+<h2>10. Practical Notes</h2>
+
+<table>
+    <tr>
+        <th>Issue</th>
+        <th>Why it matters</th>
+    </tr>
+    <tr>
+        <td>Load balance</td>
+        <td>If many tokens route to the same expert, one GPU can become a straggler. Auxiliary losses, expert capacity, token dropping, or expert-choice routing are often used to control this.</td>
+    </tr>
+    <tr>
+        <td>AllToAll topology</td>
+        <td>AllToAll stresses the interconnect differently from AllReduce. Good placement across network domains matters.</td>
+    </tr>
+    <tr>
+        <td>Small-message decode</td>
+        <td>Decode has small \(N_t\), so latency and launch overhead can dominate even when byte volume is low.</td>
+    </tr>
+    <tr>
+        <td>Padding factor \(\gamma\)</td>
+        <td>Capacity padding makes expert kernels regular, but increases communication and buffer memory.</td>
+    </tr>
+    <tr>
+        <td>Nested TP inside experts</td>
+        <td>If experts are too large for one GPU, introduce separate TP and EP degrees. The formulas in this article intentionally avoid that case.</td>
+    </tr>
+</table>
+
+<h2>11. Summary</h2>
+
+<p>
+Tensor parallelism and expert parallelism solve different scaling problems. Tensor parallelism partitions large dense
+matrix multiplications. Expert parallelism partitions a large set of experts across GPUs.
+</p>
+
+<p>
+For \(p\) GPUs and \(E\) experts with \(E\bmod p=0\), each GPU stores \(E/p\) experts. The router sends each token
+to \(k\) selected experts. Dispatch and combine are AllToAll operations whose local payload scales with
+\(\gamma kM_H/p\), while the total expert capacity scales with \(E\).
+</p>
+
+<div class="highlight">
+The central MoE tradeoff is "more parameters without evaluating all parameters per token."
+</div>
+
+<p>
+The cost is extra routing complexity, AllToAll communication, load-balancing constraints, and more complicated
+serving systems. This is why MoE models can scale far beyond dense models in parameter count, but require careful
+distributed-systems design to run efficiently.
+</p>
+
+<footer>
+    <p>&copy; 2026. All rights reserved.</p>
+</footer>
+
+</body>
+</html>
