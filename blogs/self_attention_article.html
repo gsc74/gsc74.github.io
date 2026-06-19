@@ -1,0 +1,1171 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>A Beginner's Guide to Understanding Self-Attention in Autoregressive LLMs</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async
+            src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+    </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.62;
+            max-width: 1080px;
+            margin: 0 auto;
+            padding: 22px;
+            color: #111;
+        }
+        h1, h2, h3 {
+            line-height: 1.25;
+        }
+        h1 {
+            margin-bottom: 18px;
+        }
+        a {
+            color: #0645ad;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .toc {
+            background: #f8f9fb;
+            border: 1px solid #ddd;
+            padding: 14px 18px;
+            margin: 18px 0;
+        }
+        .toc ol {
+            margin-bottom: 0;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 18px 0;
+            font-size: 0.94em;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 8px;
+            vertical-align: top;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .note {
+            background: #fff8dc;
+            border-left: 4px solid #d6a600;
+            padding: 10px;
+            margin: 12px 0;
+        }
+        .highlight {
+            background: #f0fff4;
+            border-left: 4px solid #38a169;
+            padding: 10px;
+            margin: 12px 0;
+        }
+        .warning {
+            background: #fff5f5;
+            border-left: 4px solid #e53e3e;
+            padding: 10px;
+            margin: 12px 0;
+        }
+        .refs li {
+            margin-bottom: 10px;
+        }
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 0.9em;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+
+<h1>A Beginner's Guide to Understanding Self-Attention in Autoregressive LLMs</h1>
+
+<div class="toc">
+    <strong>Table of contents</strong>
+    <ol>
+        <li><a href="#definition">Self-attention</a></li>
+        <li><a href="#why-llms">Why autoregressive LLMs use self-attention</a></li>
+        <li><a href="#questions">Questions addressed in this article</a></li>
+        <li><a href="#terminology">Terminology</a></li>
+        <li><a href="#notation">Notation and cost model</a></li>
+        <li><a href="#comparison">Runtime and memory comparison</a></li>
+        <li><a href="#exact-attention">Exact causal self-attention</a></li>
+        <li><a href="#prefill-decode">Prefill and decode</a></li>
+        <li><a href="#flashattention">FlashAttention</a></li>
+        <li><a href="#linear-attention">Linear attention</a></li>
+        <li><a href="#hyena">Hyena-style long-convolution sequence mixing</a></li>
+        <li><a href="#mamba">Mamba-style selective state-space sequence modeling</a></li>
+        <li><a href="#hybrid">Hybrid sequence models</a></li>
+        <li><a href="#summary">Summary</a></li>
+        <li><a href="#references">References</a></li>
+    </ol>
+</div>
+
+<h2 id="definition">1. Self-attention</h2>
+
+<p>
+Self-attention is a sequence-to-sequence operation. It takes a sequence of token representations as input and
+produces a new sequence of token representations as output. The output representation at each position is computed
+by reading from other positions in the same sequence.
+</p>
+
+<p>
+In an autoregressive decoder, the reading direction is causal. The representation at position \(t\) may read from
+positions \(1,\dots,t\), but not from positions \(t+1,\dots,T\). Therefore, self-attention is the mechanism by which
+a token representation can use information from the prefix.
+</p>
+
+<p>
+The word <em>attention</em> refers to the weights used for this reading operation. For a fixed target position, the
+layer assigns one weight to each allowed source position. The output at the target position is a weighted average of
+the source value vectors. These weights are not fixed by distance. They are computed from the current hidden
+representations.
+</p>
+
+<div class="highlight">
+Self-attention is content-dependent prefix aggregation: each position computes weights over allowed source positions
+and uses those weights to aggregate source values.
+</div>
+
+<h2 id="why-llms">2. Why autoregressive LLMs use self-attention</h2>
+
+<p>
+Autoregressive LLMs predict the next token from a prefix. The prefix may contain syntax, entities, instructions,
+definitions, retrieved documents, code, or previous dialogue turns. The model needs a mechanism that can select
+which prefix positions are relevant to the current computation.
+</p>
+
+<p>
+Self-attention provides explicit content-addressed access to the prefix. A target position forms a query. Prefix
+positions provide keys and values. The query is compared with keys to decide which values should contribute to the
+target representation.
+</p>
+
+<p>
+This design gives strong modeling flexibility, but it is expensive. In prefill, all prompt positions are processed
+together, so all query positions interact with all allowed key positions. In decode, one new query is processed at a
+time, but it must read keys and values stored for the entire prefix. Therefore, attention creates two different
+systems bottlenecks:
+</p>
+
+<ul>
+    <li><strong>Prefill:</strong> quadratic sequence interaction.</li>
+    <li><strong>Decode:</strong> growing KV-cache memory and bandwidth.</li>
+</ul>
+
+<p>
+Long context is useful for code repositories, long documents, clinical records, legal records, conversation memory,
+agent traces, and retrieval-augmented generation. These workloads make the cost of exact self-attention a central
+runtime and memory problem.
+</p>
+
+<h2 id="questions">3. Questions addressed in this article</h2>
+
+<table>
+    <tr>
+        <th>Question</th>
+        <th>Mechanism</th>
+        <th>Precise interpretation</th>
+    </tr>
+    <tr>
+        <td>What is the baseline sequence operator?</td>
+        <td>Exact causal self-attention</td>
+        <td>Softmax-normalized content-dependent aggregation over the causal prefix.</td>
+    </tr>
+    <tr>
+        <td>Which costs are implementation artifacts?</td>
+        <td>FlashAttention</td>
+        <td>The full score and probability matrices need not be written to GPU HBM.</td>
+    </tr>
+    <tr>
+        <td>Can softmax attention be replaced by an associative operator?</td>
+        <td>Linear attention</td>
+        <td>Feature-map attention avoids explicit \(T\times T\) pairwise score matrices.</td>
+    </tr>
+    <tr>
+        <td>Can long-range mixing be performed without query-key attention?</td>
+        <td>Hyena-style long convolution</td>
+        <td>Structured long convolutions provide subquadratic sequence mixing with different inductive bias.</td>
+    </tr>
+    <tr>
+        <td>Can the prefix be represented by a compact recurrent state?</td>
+        <td>Mamba-style selective SSM</td>
+        <td>Selective state-space recurrence targets linear-time sequence modeling and bounded decode state.</td>
+    </tr>
+    <tr>
+        <td>Can exact attention be used only where it is most valuable?</td>
+        <td>Hybrid sequence models</td>
+        <td>Exact attention can be combined with local, linear, convolutional, or state-space operators.</td>
+    </tr>
+</table>
+
+<h2 id="terminology">4. Terminology</h2>
+
+<table>
+    <tr><th>Term</th><th>Definition</th></tr>
+    <tr>
+        <td>Token</td>
+        <td>A discrete input unit processed by the model. A text sequence of length \(T\) contains \(T\) tokens.</td>
+    </tr>
+    <tr>
+        <td>Position</td>
+        <td>The index of a token in the sequence. Position \(t\) denotes the \(t\)-th token.</td>
+    </tr>
+    <tr>
+        <td>Hidden representation</td>
+        <td>A vector representation of a token at some layer of the model.</td>
+    </tr>
+    <tr>
+        <td>Query</td>
+        <td>A vector produced from the target position. It represents what the target position asks for.</td>
+    </tr>
+    <tr>
+        <td>Key</td>
+        <td>A vector produced from a source position. It represents what the source position offers for matching.</td>
+    </tr>
+    <tr>
+        <td>Value</td>
+        <td>A vector produced from a source position. It is the information aggregated after attention weights are computed.</td>
+    </tr>
+    <tr>
+        <td>Attention weight</td>
+        <td>A normalized scalar weight assigned by a target position to a source position.</td>
+    </tr>
+    <tr>
+        <td>Causal mask</td>
+        <td>A mask that prevents a position from reading future positions.</td>
+    </tr>
+    <tr>
+        <td>Prefill</td>
+        <td>The phase in which the model processes the full prompt and builds the initial KV cache.</td>
+    </tr>
+    <tr>
+        <td>Decode</td>
+        <td>The phase in which the model generates new tokens one at a time using the KV cache.</td>
+    </tr>
+    <tr>
+        <td>KV cache</td>
+        <td>The stored keys and values from previous tokens used during autoregressive decode.</td>
+    </tr>
+    <tr>
+        <td>GPU HBM</td>
+        <td>High-bandwidth memory attached to the GPU. It is large relative to SRAM but slower to access.</td>
+    </tr>
+    <tr>
+        <td>GPU SRAM</td>
+        <td>On-chip scratchpad/cache memory used by GPU kernels. It is small but has high bandwidth and low latency.</td>
+    </tr>
+    <tr>
+        <td>Sequence operator</td>
+        <td>A layer component that mixes information across token positions.</td>
+    </tr>
+</table>
+
+<h2 id="notation">5. Notation and cost model</h2>
+
+<table>
+    <tr><th>Symbol</th><th>Definition</th></tr>
+    <tr><td>\(B\)</td><td>Batch size.</td></tr>
+    <tr><td>\(T\)</td><td>Current context length.</td></tr>
+    <tr><td>\(T_0\)</td><td>Initial prompt length before decode.</td></tr>
+    <tr><td>\(T_q\)</td><td>Query length. In prefill, \(T_q=T\). In decode, \(T_q=1\).</td></tr>
+    <tr><td>\(G\)</td><td>Number of generated decode tokens.</td></tr>
+    <tr><td>\(L\)</td><td>Number of decoder layers.</td></tr>
+    <tr><td>\(H\)</td><td>Residual-stream hidden dimension.</td></tr>
+    <tr><td>\(h\)</td><td>Number of query heads.</td></tr>
+    <tr><td>\(h_{kv}\)</td><td>Number of key/value heads. For MHA, \(h_{kv}=h\). For GQA/MQA, \(h_{kv}<h\).</td></tr>
+    <tr><td>\(d\)</td><td>Per-head dimension.</td></tr>
+    <tr><td>\(H_q\)</td><td>Total query projection dimension, \(H_q=hd\).</td></tr>
+    <tr><td>\(H_{kv}\)</td><td>Total key/value projection dimension, \(H_{kv}=h_{kv}d\).</td></tr>
+    <tr><td>\(X\)</td><td>Input hidden-state matrix for one layer.</td></tr>
+    <tr><td>\(Q,K,V\)</td><td>Query, key, and value matrices or tensors.</td></tr>
+    <tr><td>\(S\)</td><td>Attention score matrix or tensor before softmax.</td></tr>
+    <tr><td>\(P\)</td><td>Attention probability matrix or tensor after softmax.</td></tr>
+    <tr><td>\(O\)</td><td>Attention output before the output projection.</td></tr>
+    <tr><td>\(W_Q,W_K,W_V,W_O\)</td><td>Projection matrices.</td></tr>
+    <tr><td>\(M_{\mathrm{causal}}\)</td><td>Causal mask.</td></tr>
+    <tr><td>\(s\)</td><td>Bytes per scalar element. For BF16 or FP16, \(s=2\).</td></tr>
+    <tr><td>\(r\)</td><td>Feature dimension used by a linear-attention feature map.</td></tr>
+    <tr><td>\(w\)</td><td>Window size for local or sliding-window attention.</td></tr>
+    <tr><td>\(n_s\)</td><td>State dimension used by a state-space sequence model.</td></tr>
+    <tr><td>\(c_s\)</td><td>Per-token cost of a non-attention sequence mixer in high-level estimates.</td></tr>
+</table>
+
+<p>
+The cost model reports leading-order sequence-mixing terms. Wall-clock runtime also depends on tensor-core
+utilization, kernel fusion, memory layout, GPU occupancy, parallelization, and communication overhead.
+</p>
+
+<h2 id="comparison">6. Runtime and memory comparison</h2>
+
+<table>
+    <tr>
+        <th>Method</th>
+        <th>Preserves exact softmax attention?</th>
+        <th>Prefill sequence-mixing work</th>
+        <th>Extra score/probability memory</th>
+        <th>Decode per-token work</th>
+        <th>Decode state or cache</th>
+        <th>Primary systems bottleneck</th>
+    </tr>
+    <tr>
+        <td>Naive causal attention</td>
+        <td>Yes</td>
+        <td>\(O(BhT^2d)\)</td>
+        <td>\(O(BhT^2)\)</td>
+        <td>\(O(BhTd)\)</td>
+        <td>\(O(LBTH_{kv})\) KV cache</td>
+        <td>Quadratic HBM traffic and activation memory in prefill; KV-cache bandwidth in decode.</td>
+    </tr>
+    <tr>
+        <td>FlashAttention</td>
+        <td>Yes</td>
+        <td>\(O(BhT^2d)\)</td>
+        <td>Avoids materialized \(S,P\)</td>
+        <td>\(O(BhTd)\)</td>
+        <td>Same KV cache as exact attention</td>
+        <td>Quadratic compute remains; HBM traffic is reduced by SRAM tiling and online softmax.</td>
+    </tr>
+    <tr>
+        <td>Linear attention</td>
+        <td>No</td>
+        <td>\(O(BhTrd)\)</td>
+        <td>No \(T\times T\) attention matrix</td>
+        <td>\(O(Bhrd)\)</td>
+        <td>Feature-map recurrent state \(O(Bh(rd+r))\)</td>
+        <td>Feature-map expressivity, numerical stability, and approximation quality.</td>
+    </tr>
+    <tr>
+        <td>Sliding-window attention</td>
+        <td>Exact only within the window</td>
+        <td>\(O(BhTwd)\)</td>
+        <td>\(O(BhTw)\)</td>
+        <td>\(O(Bhwd)\)</td>
+        <td>Windowed KV cache \(O(LBwh_{kv}d)\)</td>
+        <td>Restricted receptive field unless combined with global or sparse paths.</td>
+    </tr>
+    <tr>
+        <td>Hyena-style long convolution</td>
+        <td>No</td>
+        <td>Often subquadratic, e.g. \(O(BHT\log T)\) depending on implementation</td>
+        <td>No softmax attention matrix</td>
+        <td>Implementation-dependent streaming state</td>
+        <td>Convolutional or recurrent representation</td>
+        <td>Balancing long-range mixing with content adaptivity.</td>
+    </tr>
+    <tr>
+        <td>Mamba-style selective SSM</td>
+        <td>No</td>
+        <td>Designed for linear sequence scaling, e.g. \(O(BTHn_s)\)</td>
+        <td>No softmax attention matrix</td>
+        <td>\(O(BHn_s)\)</td>
+        <td>Selective recurrent state \(O(LBHn_s)\)</td>
+        <td>State capacity and implicit retrieval from compressed history.</td>
+    </tr>
+    <tr>
+        <td>Hybrid sequence model</td>
+        <td>Partially</td>
+        <td>Depends on allocation across operators</td>
+        <td>Depends on exact-attention fraction</td>
+        <td>Mixed KV cache and recurrent states</td>
+        <td>Architecture-dependent</td>
+        <td>Operator allocation, kernel fusion, normalization, and quality tradeoffs.</td>
+    </tr>
+</table>
+
+<div class="note">
+The table compares sequence-mixing costs, not the full decoder block. QKV projections, output projections, MLPs,
+normalization, communication, and sampling are outside this table unless explicitly stated.
+</div>
+
+<h2 id="exact-attention">7. Exact causal self-attention</h2>
+
+<h3>7.1 Scalar definition</h3>
+
+<p>
+Consider one sequence and one attention head. The hidden-state matrix is
+</p>
+
+<p>
+\[
+X=[x_1,\dots,x_T]^\top\in\mathbb{R}^{T\times H}.
+\]
+</p>
+
+<p>
+The query, key, and value matrices are
+</p>
+
+<p>
+\[
+Q=XW_Q,\qquad K=XW_K,\qquad V=XW_V,
+\]
+</p>
+
+<p>
+where
+</p>
+
+<p>
+\[
+Q,K,V\in\mathbb{R}^{T\times d}.
+\]
+</p>
+
+<p>
+For position \(t\), the output is
+</p>
+
+<p>
+\[
+o_t
+=
+\sum_{u\leq t}\alpha_{t,u}v_u.
+\]
+</p>
+
+<p>
+The attention weight from target position \(t\) to source position \(u\) is
+</p>
+
+<p>
+\[
+\alpha_{t,u}
+=
+\frac{\exp(q_t^\top k_u/\sqrt d)}
+{\sum_{j\leq t}\exp(q_t^\top k_j/\sqrt d)}.
+\]
+</p>
+
+<h3>7.2 Matrix form</h3>
+
+<p>
+The same operation can be written as
+</p>
+
+<p>
+\[
+O
+=
+\mathrm{softmax}
+\left(
+\frac{QK^\top}{\sqrt d}
++
+M_{\mathrm{causal}}
+\right)V.
+\]
+</p>
+
+<p>
+The causal mask is
+</p>
+
+<p>
+\[
+M_{\mathrm{causal}}(t,u)=
+\begin{cases}
+0, & u\leq t,\\
+-\infty, & u>t.
+\end{cases}
+\]
+</p>
+
+<h3>7.3 Batch and head dimensions</h3>
+
+<p>
+With batch size \(B\), query heads \(h\), and key/value heads \(h_{kv}\),
+</p>
+
+<p>
+\[
+Q\in\mathbb{R}^{B\times h\times T_q\times d},
+\]
+</p>
+
+<p>
+\[
+K,V\in\mathbb{R}^{B\times h_{kv}\times T\times d}.
+\]
+</p>
+
+<p>
+For MHA, \(h_{kv}=h\). For GQA or MQA, \(h_{kv}<h\), and each key/value head is shared by a group of query heads.
+The attention score tensor has query-head dimension \(h\), but the KV cache scales with \(h_{kv}\).
+</p>
+
+<h2 id="prefill-decode">8. Prefill and decode</h2>
+
+<h3>8.1 Prefill runtime</h3>
+
+<p>
+In prefill, \(T_q=T\). The score tensor has shape
+</p>
+
+<p>
+\[
+S\in\mathbb{R}^{B\times h\times T\times T}.
+\]
+</p>
+
+<table>
+    <tr>
+        <th>Operation</th>
+        <th>Expression</th>
+        <th>Leading work</th>
+    </tr>
+    <tr>
+        <td>Score computation</td>
+        <td>\(QK^\top\)</td>
+        <td>\(O(BhT^2d)\)</td>
+    </tr>
+    <tr>
+        <td>Causal softmax</td>
+        <td>\(\mathrm{softmax}(S+M_{\mathrm{causal}})\)</td>
+        <td>\(O(BhT^2)\)</td>
+    </tr>
+    <tr>
+        <td>Value aggregation</td>
+        <td>\(PV\)</td>
+        <td>\(O(BhT^2d)\)</td>
+    </tr>
+</table>
+
+<p>
+Thus the prefill attention core costs
+</p>
+
+<p>
+\[
+O(BhT^2d).
+\]
+</p>
+
+<p>
+When \(H=hd\), this is \(O(BT^2H)\). Dense QKV and output projections scale as \(O(BTH^2)\). Therefore, for
+moderate \(T\), projections and MLPs may dominate; for sufficiently long \(T\), the quadratic attention core becomes
+dominant.
+</p>
+
+<h3>8.2 Prefill activation memory</h3>
+
+<p>
+A naive implementation materializes
+</p>
+
+<p>
+\[
+S,P\in\mathbb{R}^{B\times h\times T\times T}.
+\]
+</p>
+
+<p>
+The two tensors require
+</p>
+
+<p>
+\[
+2BhT^2s
+\]
+</p>
+
+<p>
+bytes. In contrast, the QKV tensors require
+</p>
+
+<p>
+\[
+BT(h+2h_{kv})ds
+\]
+</p>
+
+<p>
+bytes. For MHA, this becomes \(3BTHs\). Therefore, score/probability storage scales quadratically in \(T\), while
+QKV storage scales linearly in \(T\).
+</p>
+
+<h3>8.3 Decode runtime</h3>
+
+<p>
+In decode, \(T_q=1\). For each generated token,
+</p>
+
+<p>
+\[
+Q_{\mathrm{new}}\in\mathbb{R}^{B\times h\times 1\times d},
+\]
+</p>
+
+<p>
+while
+</p>
+
+<p>
+\[
+K_{\mathrm{cache}},V_{\mathrm{cache}}
+\in\mathbb{R}^{B\times h_{kv}\times T\times d}.
+\]
+</p>
+
+<p>
+The attention core costs
+</p>
+
+<p>
+\[
+O(BhTd)
+\]
+</p>
+
+<p>
+per generated token. For \(G\) generated tokens after a prompt of length \(T_0\), the cumulative decode attention
+work is
+</p>
+
+<p>
+\[
+O\left(
+Bhd\sum_{g=1}^{G}(T_0+g)
+\right)
+=
+O\left(Bhd(GT_0+G^2)\right).
+\]
+</p>
+
+<h3>8.4 KV-cache memory and bandwidth</h3>
+
+<p>
+The KV cache for one layer is
+</p>
+
+<p>
+\[
+K,V\in\mathbb{R}^{B\times h_{kv}\times T\times d}.
+\]
+</p>
+
+<p>
+The memory per layer is
+</p>
+
+<p>
+\[
+\mathrm{Mem}_{\mathrm{KV,layer}}
+=
+2BTh_{kv}ds
+=
+2BTH_{kv}s.
+\]
+</p>
+
+<p>
+Across \(L\) layers,
+</p>
+
+<p>
+\[
+\mathrm{Mem}_{\mathrm{KV,total}}
+=
+2LBTH_{kv}s.
+\]
+</p>
+
+<p>
+At each decode step, the model streams the relevant cached keys and values. The approximate read volume across all
+layers is
+</p>
+
+<p>
+\[
+2LBTh_{kv}ds.
+\]
+</p>
+
+<p>
+This is why decode is often memory-bandwidth-bound even though the arithmetic cost is linear in \(T\) per generated
+token.
+</p>
+
+<h2 id="flashattention">9. FlashAttention</h2>
+
+<h3>9.1 Exact operator, IO-aware execution</h3>
+
+<p>
+FlashAttention computes exact causal softmax attention:
+</p>
+
+<p>
+\[
+O
+=
+\mathrm{softmax}
+\left(
+\frac{QK^\top}{\sqrt d}
++
+M_{\mathrm{causal}}
+\right)V.
+\]
+</p>
+
+<p>
+It changes the execution schedule, not the sequence operator. A naive implementation writes the \(S\) and \(P\)
+tensors to GPU HBM. FlashAttention tiles \(Q\), \(K\), and \(V\), moves tiles through GPU SRAM, and maintains the
+softmax state without materializing \(S\) and \(P\) in HBM.
+</p>
+
+<h3>9.2 Online softmax</h3>
+
+<p>
+For a row \(i\), the attention output is
+</p>
+
+<p>
+\[
+o_i
+=
+\frac{\sum_j \exp(s_{ij})v_j}{\sum_j \exp(s_{ij})}.
+\]
+</p>
+
+<p>
+For numerical stability, define
+</p>
+
+<p>
+\[
+m_i=\max_j s_{ij}.
+\]
+</p>
+
+<p>
+Then
+</p>
+
+<p>
+\[
+o_i
+=
+\frac{\sum_j \exp(s_{ij}-m_i)v_j}{\sum_j \exp(s_{ij}-m_i)}.
+\]
+</p>
+
+<p>
+FlashAttention processes \(K,V\) blocks sequentially for a block of queries. It updates the row maximum,
+denominator, and partial numerator in SRAM. The final output is exact, but the quadratic score and probability
+matrices are not written to HBM.
+</p>
+
+<h3>9.3 Runtime and memory implications</h3>
+
+<table>
+    <tr>
+        <th>Quantity</th>
+        <th>Naive exact attention</th>
+        <th>FlashAttention</th>
+    </tr>
+    <tr>
+        <td>Output</td>
+        <td>Exact causal softmax attention</td>
+        <td>Exact causal softmax attention</td>
+    </tr>
+    <tr>
+        <td>Attention-core work</td>
+        <td>\(O(BhT^2d)\)</td>
+        <td>\(O(BhT^2d)\)</td>
+    </tr>
+    <tr>
+        <td>Materialized \(S,P\)</td>
+        <td>\(O(BhT^2)\) elements in HBM</td>
+        <td>Avoided</td>
+    </tr>
+    <tr>
+        <td>Memory-system effect</td>
+        <td>High HBM traffic</td>
+        <td>Improved SRAM reuse and reduced HBM transactions</td>
+    </tr>
+</table>
+
+<p>
+FlashAttention reduces IO cost and activation-memory pressure. It does not remove the quadratic number of query-key
+interactions.
+</p>
+
+<h2 id="linear-attention">10. Linear attention</h2>
+
+<h3>10.1 Feature-map formulation</h3>
+
+<p>
+Linear attention replaces the softmax attention kernel with a feature-map similarity:
+</p>
+
+<p>
+\[
+\mathrm{sim}(q,k)=\phi(q)^\top\phi(k),
+\]
+</p>
+
+<p>
+where
+</p>
+
+<p>
+\[
+\phi(q),\phi(k)\in\mathbb{R}^{r}.
+\]
+</p>
+
+<p>
+For causal linear attention,
+</p>
+
+<p>
+\[
+o_t
+=
+\frac{
+\phi(q_t)^\top
+\left(
+\sum_{u\leq t}\phi(k_u)v_u^\top
+\right)
+}{
+\phi(q_t)^\top
+\left(
+\sum_{u\leq t}\phi(k_u)
+\right)
+}.
+\]
+</p>
+
+<p>
+Define the recurrent states
+</p>
+
+<p>
+\[
+A_t=
+\sum_{u\leq t}\phi(k_u)v_u^\top
+\in\mathbb{R}^{r\times d},
+\]
+</p>
+
+<p>
+and
+</p>
+
+<p>
+\[
+b_t=
+\sum_{u\leq t}\phi(k_u)
+\in\mathbb{R}^{r}.
+\]
+</p>
+
+<p>
+Then
+</p>
+
+<p>
+\[
+o_t
+=
+\frac{\phi(q_t)^\top A_t}{\phi(q_t)^\top b_t}.
+\]
+</p>
+
+<h3>10.2 Runtime and memory</h3>
+
+<p>
+For each token and each head, updating \(A_t\) costs \(O(rd)\), updating \(b_t\) costs \(O(r)\), and producing
+\(o_t\) costs \(O(rd)\). The leading cost over \(T\) tokens is
+</p>
+
+<p>
+\[
+O(Trd)
+\]
+</p>
+
+<p>
+per head, or
+</p>
+
+<p>
+\[
+O(BhTrd)
+\]
+</p>
+
+<p>
+with batch and heads.
+</p>
+
+<p>
+The recurrent state per batch element and per head is
+</p>
+
+<p>
+\[
+A_t\in\mathbb{R}^{r\times d},
+\qquad
+b_t\in\mathbb{R}^{r}.
+\]
+</p>
+
+<p>
+This avoids a \(T\times T\) attention matrix, but it changes the sequence operator. The quality and stability depend
+on the feature map \(\phi\), feature dimension \(r\), normalization, and training dynamics.
+</p>
+
+<h2 id="hyena">11. Hyena-style long-convolution sequence mixing</h2>
+
+<p>
+Hyena is an attention alternative, not an attention implementation. It uses long convolutions and data-controlled
+gating to obtain subquadratic sequence mixing.
+</p>
+
+<p>
+A causal long convolution can be written as
+</p>
+
+<p>
+\[
+y_t
+=
+\sum_{u\leq t} k_{t-u}x_u.
+\]
+</p>
+
+<p>
+Hyena-style architectures combine such long filters with multiplicative gates:
+</p>
+
+<p>
+\[
+Y
+=
+G(X)\odot \mathrm{LongConv}(X).
+\]
+</p>
+
+<p>
+The convolution supplies long-range mixing. The gate supplies input dependence. Depending on the filter
+parameterization and implementation, the sequence cost can be subquadratic, for example through FFT-based or
+structured convolution methods.
+</p>
+
+<h2 id="mamba">12. Mamba-style selective state-space sequence modeling</h2>
+
+<p>
+Mamba is a selective state-space sequence model. It is not an attention mechanism. Its relevance here is that it
+targets long-context sequence modeling with a recurrent state rather than an explicit KV cache.
+</p>
+
+<p>
+A simplified state-space recurrence is
+</p>
+
+<p>
+\[
+x_{t+1}=A x_t+B u_t,
+\]
+</p>
+
+<p>
+\[
+y_t=C x_t+D u_t.
+\]
+</p>
+
+<p>
+Selective state-space models make parts of the recurrence input-dependent. A schematic form is
+</p>
+
+<p>
+\[
+x_{t+1}=A(u_t)x_t+B(u_t)u_t,
+\]
+</p>
+
+<p>
+\[
+y_t=C(u_t)x_t.
+\]
+</p>
+
+<p>
+This expression is schematic. It shows the modeling distinction: the update depends on the current token, allowing
+the state to selectively propagate or forget information.
+</p>
+
+<h2 id="hybrid">13. Hybrid sequence models</h2>
+
+<p>
+Hybrid models combine exact attention with lower-cost sequence mixers. The premise is that full pairwise
+content-addressing may not be required in every layer, every head, or every token range.
+</p>
+
+<p>
+Suppose a model has \(L\) sequence-mixing layers:
+</p>
+
+<p>
+\[
+L=L_a+L_l+L_s,
+\]
+</p>
+
+<p>
+where \(L_a\) layers use exact attention, \(L_l\) layers use linear or local attention, and \(L_s\) layers use
+state-space or convolutional mixers.
+</p>
+
+<p>
+A representative prefill cost is
+</p>
+
+<p>
+\[
+O(L_aBhT^2d)
++
+O(L_lBhTrd)
++
+O(L_sBTc_s).
+\]
+</p>
+
+<p>
+This expression makes the allocation problem explicit: exact attention layers preserve pairwise token interaction,
+while cheaper layers reduce the average sequence-mixing cost.
+</p>
+
+<h2 id="summary">14. Summary</h2>
+
+<p>
+Self-attention is content-dependent prefix aggregation. Each position computes weights over allowed source positions
+and uses those weights to aggregate source values. In autoregressive LLMs, the allowed source positions are the
+current token and the previous tokens.
+</p>
+
+<p>
+Exact causal attention has prefill sequence-mixing cost
+</p>
+
+<p>
+\[
+O(BhT^2d).
+\]
+</p>
+
+<p>
+A naive implementation may also materialize score and probability tensors of size
+</p>
+
+<p>
+\[
+O(BhT^2).
+\]
+</p>
+
+<p>
+In decode, exact attention has per-token cost
+</p>
+
+<p>
+\[
+O(BhTd),
+\]
+</p>
+
+<p>
+and a total KV-cache memory footprint
+</p>
+
+<p>
+\[
+2LBTH_{kv}s.
+\]
+</p>
+
+<p>
+FlashAttention preserves exact softmax attention and reduces HBM traffic by using SRAM-resident tiles and online
+softmax. Linear attention replaces softmax attention with an associative feature-map formulation. Hyena and Mamba
+replace attention with long-convolution or selective state-space sequence mixers. Hybrid models combine these
+mechanisms to choose how much exact pairwise interaction is used.
+</p>
+
+<h2 id="references">References</h2>
+
+<ol class="refs">
+    <li>
+        A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez,
+        Ł. Kaiser, and I. Polosukhin, “Attention is all you need,” in
+        <em>Advances in Neural Information Processing Systems</em>, vol. 30, 2017.
+        Available:
+        <a href="https://proceedings.neurips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html">
+        NeurIPS proceedings</a>;
+        arXiv:
+        <a href="https://arxiv.org/abs/1706.03762">1706.03762</a>.
+    </li>
+    <li>
+        A. Katharopoulos, A. Vyas, N. Pappas, and F. Fleuret, “Transformers are RNNs:
+        Fast autoregressive transformers with linear attention,” in
+        <em>Proceedings of the 37th International Conference on Machine Learning</em>,
+        PMLR, vol. 119, pp. 5156–5165, 2020.
+        Available:
+        <a href="https://proceedings.mlr.press/v119/katharopoulos20a.html">PMLR</a>;
+        arXiv:
+        <a href="https://arxiv.org/abs/2006.16236">2006.16236</a>.
+    </li>
+    <li>
+        K. Choromanski et al., “Rethinking attention with performers,” in
+        <em>International Conference on Learning Representations</em>, 2021.
+        Available:
+        <a href="https://openreview.net/forum?id=Ua6zuk0WRH">OpenReview</a>;
+        arXiv:
+        <a href="https://arxiv.org/abs/2009.14794">2009.14794</a>.
+    </li>
+    <li>
+        T. Dao, D. Y. Fu, S. Ermon, A. Rudra, and C. Ré, “FlashAttention:
+        Fast and memory-efficient exact attention with IO-awareness,” in
+        <em>Advances in Neural Information Processing Systems</em>, vol. 35, 2022.
+        Available:
+        <a href="https://proceedings.neurips.cc/paper_files/paper/2022/hash/67d57c32e20fd0a7a302cb81d36e40d5-Abstract-Conference.html">
+        NeurIPS proceedings</a>;
+        arXiv:
+        <a href="https://arxiv.org/abs/2205.14135">2205.14135</a>.
+    </li>
+    <li>
+        T. Dao, “FlashAttention-2: Faster attention with better parallelism and work
+        partitioning,” in <em>International Conference on Learning Representations</em>,
+        2024. Available:
+        <a href="https://openreview.net/forum?id=mZn2Xyh9Ec">OpenReview</a>;
+        arXiv:
+        <a href="https://arxiv.org/abs/2307.08691">2307.08691</a>.
+    </li>
+    <li>
+        M. Poli et al., “Hyena hierarchy: Towards larger convolutional language models,” in
+        <em>Proceedings of the 40th International Conference on Machine Learning</em>,
+        PMLR, vol. 202, pp. 28043–28078, 2023.
+        arXiv:
+        <a href="https://arxiv.org/abs/2302.10866">2302.10866</a>.
+    </li>
+    <li>
+        A. Gu and T. Dao, “Mamba: Linear-time sequence modeling with selective state spaces,”
+        in <em>Conference on Language Modeling</em>, 2024.
+        Available:
+        <a href="https://openreview.net/forum?id=tEYskw1VY2">OpenReview</a>;
+        arXiv:
+        <a href="https://arxiv.org/abs/2312.00752">2312.00752</a>.
+    </li>
+</ol>
+
+<footer>
+    <p>&copy; 2026. All rights reserved.</p>
+</footer>
+
+</body>
+</html>
