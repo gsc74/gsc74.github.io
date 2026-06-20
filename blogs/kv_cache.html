@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A Beginner's Guide to Understanding KV Caches in Autoregressive LLMs</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.62;
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 22px;
+      color: #111;
+    }
+    h1, h2, h3 { line-height: 1.25; }
+    h1 { margin-bottom: 18px; }
+    h2 { margin-top: 34px; }
+    a { color: #0645ad; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .toc {
+      background: #f8f9fb;
+      border: 1px solid #ddd;
+      padding: 14px 18px;
+      margin: 18px 0;
+    }
+    .toc ol { margin-bottom: 0; }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 18px 0;
+      font-size: 0.94em;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 8px;
+      vertical-align: top;
+    }
+    th { background: #f2f2f2; }
+    .note {
+      background: #fff8dc;
+      border-left: 4px solid #d6a600;
+      padding: 10px;
+      margin: 12px 0;
+    }
+    .highlight {
+      background: #f0fff4;
+      border-left: 4px solid #38a169;
+      padding: 10px;
+      margin: 12px 0;
+    }
+    .warning {
+      background: #fff5f5;
+      border-left: 4px solid #e53e3e;
+      padding: 10px;
+      margin: 12px 0;
+    }
+    .math {
+      font-family: "Times New Roman", Times, serif;
+      white-space: nowrap;
+    }
+    .equation {
+      font-family: "Times New Roman", Times, serif;
+      text-align: center;
+      margin: 14px auto;
+      padding: 8px 12px;
+      overflow-x: auto;
+      white-space: nowrap;
+      font-size: 1.08em;
+    }
+    .equation .line {
+      display: block;
+      margin: 4px 0;
+    }
+    .refs li { margin-bottom: 10px; }
+    footer {
+      text-align: center;
+      margin-top: 30px;
+      font-size: 0.9em;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+
+<h1>A Beginner's Guide to Understanding KV Caches in Autoregressive LLMs</h1>
+
+<div class="toc">
+  <strong>Table of contents</strong>
+  <ol>
+    <li><a href="#kv-cache">KV cache</a></li>
+    <li><a href="#notation">Notation</a></li>
+    <li><a href="#decode">KV-cache state during decode</a></li>
+    <li><a href="#growth">Growth of the KV cache</a></li>
+    <li><a href="#prefix">Prefix caching</a></li>
+    <li><a href="#quantization">KV-cache quantization</a></li>
+    <li><a href="#summary">Summary</a></li>
+    <li><a href="#references">References</a></li>
+  </ol>
+</div>
+
+<h2 id="kv-cache">1. KV cache</h2>
+
+<p>
+A key-value, or KV, cache is the per-layer storage of attention keys and values computed for tokens that an
+autoregressive model has already processed. It is used during inference, when the model generates one new token at
+a time.
+</p>
+
+<p>
+At a decoder layer, the current token produces a query, a key, and a value. The query is used only for the current
+attention calculation. The key and value remain useful because every later token in the same layer may attend to
+them. The cache therefore retains keys and values, not past queries.
+</p>
+
+<p>
+The cache avoids repeated prefix computation. Without it, generating each new token would require recomputing the
+keys and values of all preceding tokens at every decoder layer. With it, the model computes the key and value only
+for the newly appended token and reuses the stored prefix states.
+</p>
+
+<div class="highlight">
+A KV cache trades memory for avoided recomputation. It does not eliminate attention over the prefix: the current
+query still scores against stored keys and aggregates stored values.
+</div>
+
+<h3>1.1 Why the cache remains valid</h3>
+
+<p>
+Causal attention prevents a token from depending on later tokens. Therefore, appending later tokens does not modify
+the hidden state of an earlier token at a fixed layer. The key and value derived from that earlier hidden state also
+do not change, so they can be reused exactly during later decode steps.
+</p>
+
+<h2 id="notation">2. Notation</h2>
+
+<p>
+All symbols are defined before their first use in an equation. The article first describes one sequence, then extends
+the memory formulas to a batch of active requests.
+</p>
+
+<table>
+  <tr><th>Symbol</th><th>Definition</th></tr>
+  <tr><td><span class="math">t</span></td><td>Current token position in a sequence.</td></tr>
+  <tr><td><span class="math">u</span></td><td>Source-token position.</td></tr>
+  <tr><td><span class="math">T</span></td><td>Current context length.</td></tr>
+  <tr><td><span class="math">T<sub>i</sub></span></td><td>Context length of active sequence <span class="math">i</span>, used when request lengths differ.</td></tr>
+  <tr><td><span class="math">ℓ</span></td><td>Decoder-layer index.</td></tr>
+  <tr><td><span class="math">L</span></td><td>Total number of decoder layers.</td></tr>
+  <tr><td><span class="math">q<sub>ℓ,t</sub></span></td><td>Query vector for token <span class="math">t</span> at layer <span class="math">ℓ</span>.</td></tr>
+  <tr><td><span class="math">k<sub>ℓ,t</sub></span></td><td>Key vector for token <span class="math">t</span> at layer <span class="math">ℓ</span>.</td></tr>
+  <tr><td><span class="math">v<sub>ℓ,t</sub></span></td><td>Value vector for token <span class="math">t</span> at layer <span class="math">ℓ</span>.</td></tr>
+  <tr><td><span class="math">K<sub>ℓ,&lt;t</sub>, V<sub>ℓ,&lt;t</sub></span></td><td>Cached keys and values at layer <span class="math">ℓ</span> for positions <span class="math">1,…,t−1</span>.</td></tr>
+  <tr><td><span class="math">K<sub>ℓ,≤t</sub>, V<sub>ℓ,≤t</sub></span></td><td>Cached keys and values at layer <span class="math">ℓ</span> after position <span class="math">t</span> is appended.</td></tr>
+  <tr><td><span class="math">o<sub>ℓ,t</sub></span></td><td>Attention output for token <span class="math">t</span> at layer <span class="math">ℓ</span>.</td></tr>
+  <tr><td><span class="math">B</span></td><td>Number of active sequences or request branches.</td></tr>
+  <tr><td><span class="math">h</span></td><td>Number of query heads.</td></tr>
+  <tr><td><span class="math">h<sub>kv</sub></span></td><td>Number of key/value heads.</td></tr>
+  <tr><td><span class="math">d</span></td><td>Dimension of one query, key, or value head.</td></tr>
+  <tr><td><span class="math">H<sub>kv</sub></span></td><td>Total key/value width; <span class="math">H<sub>kv</sub> = h<sub>kv</sub>d</span>.</td></tr>
+  <tr><td><span class="math">s<sub>K</sub>, s<sub>V</sub></span></td><td>Bytes per stored key or value scalar.</td></tr>
+  <tr><td><span class="math">s</span></td><td>Common bytes per scalar when keys and values use the same representation. For BF16 or FP16, <span class="math">s = 2</span>.</td></tr>
+  <tr><td><span class="math">P</span></td><td>Length of a reusable prefix.</td></tr>
+  <tr><td><span class="math">U</span></td><td>Length of a new suffix; <span class="math">U = T − P</span>.</td></tr>
+  <tr><td><span class="math">b<sub>K</sub>, b<sub>V</sub></span></td><td>Stored bit widths for a quantized key or value scalar.</td></tr>
+  <tr><td><span class="math">M<sub>meta</sub></span></td><td>Memory used by quantization scales, zero points, and other metadata.</td></tr>
+</table>
+
+<p>
+For ordinary multi-head attention, <span class="math">h<sub>kv</sub> = h</span>. In grouped-query attention,
+<span class="math">1 &lt; h<sub>kv</sub> &lt; h</span>; in multi-query attention,
+<span class="math">h<sub>kv</sub> = 1</span>. KV-cache storage scales with <span class="math">h<sub>kv</sub></span>,
+not directly with the number of query heads <span class="math">h</span>.
+</p>
+
+<h2 id="decode">3. KV-cache state during decode</h2>
+
+<p>
+Before token <span class="math">t</span> is processed at layer <span class="math">ℓ</span>, the cache contains keys
+and values for all earlier positions:
+</p>
+
+<div class="equation">
+  <span class="line">K<sub>ℓ,&lt;t</sub> = [k<sub>ℓ,1</sub>, …, k<sub>ℓ,t−1</sub>]<sup>⊤</sup></span>
+  <span class="line">V<sub>ℓ,&lt;t</sub> = [v<sub>ℓ,1</sub>, …, v<sub>ℓ,t−1</sub>]<sup>⊤</sup></span>
+</div>
+
+<p>
+After computing the current key and value, the cache contains positions <span class="math">1,…,t</span>:
+</p>
+
+<div class="equation">
+  <span class="line">K<sub>ℓ,≤t</sub> = [k<sub>ℓ,1</sub>, …, k<sub>ℓ,t</sub>]<sup>⊤</sup></span>
+  <span class="line">V<sub>ℓ,≤t</sub> = [v<sub>ℓ,1</sub>, …, v<sub>ℓ,t</sub>]<sup>⊤</sup></span>
+</div>
+
+<p>
+The current query is scored against the updated key cache, and the resulting weights aggregate the updated value
+cache:
+</p>
+
+<div class="equation">
+  o<sub>ℓ,t</sub> = softmax(q<sub>ℓ,t</sub>K<sub>ℓ,≤t</sub><sup>⊤</sup> / √d) V<sub>ℓ,≤t</sub>
+</div>
+
+<p>
+The cache is maintained independently at every decoder layer. A model with <span class="math">L</span> layers has
+<span class="math">L</span> key caches and <span class="math">L</span> value caches.
+</p>
+
+<h2 id="growth">4. Growth of the KV cache</h2>
+
+<h3>4.1 Per-layer cache size</h3>
+
+<p>
+For one layer and one sequence of length <span class="math">T</span>, each key tensor and each value tensor has
+shape <span class="math">h<sub>kv</sub> × T × d</span>. The combined key/value storage at that layer is:
+</p>
+
+<div class="equation">
+  M<sub>KV,layer</sub> = T h<sub>kv</sub> d (s<sub>K</sub> + s<sub>V</sub>)
+</div>
+
+<p>
+When keys and values use the same precision, <span class="math">s<sub>K</sub> = s<sub>V</sub> = s</span>:
+</p>
+
+<div class="equation">
+  M<sub>KV,layer</sub> = 2T h<sub>kv</sub>d s = 2T H<sub>kv</sub>s
+</div>
+
+<h3>4.2 Total cache size</h3>
+
+<p>
+For <span class="math">B</span> active sequences, each with context length <span class="math">T</span>, the total
+KV-cache memory across <span class="math">L</span> decoder layers is:
+</p>
+
+<div class="equation">
+  M<sub>KV,total</sub> = L B T h<sub>kv</sub>d(s<sub>K</sub> + s<sub>V</sub>)
+</div>
+
+<p>
+With equal key/value precision:
+</p>
+
+<div class="equation">
+  M<sub>KV,total</sub> = 2LBT h<sub>kv</sub>d s = 2LBT H<sub>kv</sub>s
+</div>
+
+<p>
+For requests with unequal context lengths, replace <span class="math">BT</span> with
+<span class="math">Σ<sub>i=1</sub><sup>B</sup>T<sub>i</sub></span>:
+</p>
+
+<div class="equation">
+  M<sub>KV,total</sub> = L h<sub>kv</sub>d(s<sub>K</sub> + s<sub>V</sub>) Σ<sub>i=1</sub><sup>B</sup>T<sub>i</sub>
+</div>
+
+<h3>4.3 Incremental growth</h3>
+
+<p>
+Appending one token to one active sequence adds:
+</p>
+
+<div class="equation">
+  ΔM<sub>one token</sub> = L h<sub>kv</sub>d(s<sub>K</sub> + s<sub>V</sub>)
+</div>
+
+<p>
+For BF16 or FP16 keys and values, this is:
+</p>
+
+<div class="equation">
+  ΔM<sub>one token</sub> = 2L h<sub>kv</sub>d s
+</div>
+
+<h3>4.4 Example</h3>
+
+<p>
+Consider <span class="math">L = 32</span> layers, <span class="math">h<sub>kv</sub> = 8</span>,
+<span class="math">d = 128</span>, <span class="math">B = 1</span>, <span class="math">T = 8192</span>, and BF16
+storage, so <span class="math">s = 2</span> bytes. The KV cache is:
+</p>
+
+<div class="equation">
+  M<sub>KV,total</sub> = 2 × 32 × 1 × 8192 × 8 × 128 × 2 = 1,073,741,824 bytes = 1 GiB
+</div>
+
+<p>
+If the same model used <span class="math">h<sub>kv</sub> = 32</span> rather than
+<span class="math">h<sub>kv</sub> = 8</span>, the cache would require <span class="math">4 GiB</span> under the
+same conditions. This is one reason grouped-query attention is valuable in inference.
+</p>
+
+<h3>4.5 Decode bandwidth</h3>
+
+<p>
+During decode, the KV cache has a resident HBM footprint and incurs per-token HBM read traffic. A lower-bound payload estimate for one decode step across all layers is:
+</p>
+
+<div class="equation">
+  R<sub>KV,decode</sub> ≈ L B T h<sub>kv</sub>d(s<sub>K</sub> + s<sub>V</sub>)
+</div>
+
+<p>
+This is a payload estimate, not a hardware-independent prediction of exact HBM traffic. Actual traffic depends on
+GQA reuse, tiling, GPU SRAM capacity, cache layout, and the attention kernel. Nevertheless, it explains why
+small-batch decode is frequently constrained by GPU HBM bandwidth rather than floating-point throughput.
+</p>
+
+<h2 id="prefix">5. Prefix caching</h2>
+
+<p>
+Prefix caching reuses KV-cache states across requests that start with the same compatible token prefix. It targets
+redundant <strong>prefill</strong>; it does not alter ordinary within-request decode reuse.
+</p>
+
+<p>
+Suppose a request has a reusable prefix of length <span class="math">P</span> and a new suffix of length
+<span class="math">U</span>, where <span class="math">T = P + U</span>. If a cache entry exists for the prefix,
+the serving system reuses its KV blocks and computes the sequence state only for the suffix.
+</p>
+
+<h3>5.1 What work is saved</h3>
+
+<p>
+Without a cache hit, the leading exact-attention prefill term is
+<span class="math">O(BhT<sup>2</sup>d)</span>. With a reusable prefix, only suffix query rows must be created.
+They still score against all <span class="math">T</span> cached and new keys, giving a leading suffix-attention term:
+</p>
+
+<div class="equation">
+  O(BhUTd)
+</div>
+
+<p>
+Prefix reuse therefore skips prefill computation for the shared prefix. It does not remove the prefix from the
+attention context; suffix queries still attend to cached prefix keys and values.
+</p>
+
+<h3>5.2 Cache-key compatibility</h3>
+
+<p>
+A prefix-cache hit is valid only when the cached KV states are exactly the states required by the new request.
+
+For example, two requests can share a cache entry when they use the same model and begin with the same token sequence. They cannot safely share it when the prefix differs after tokenization, the model or adapter differs, or a setting changes how keys and values are computed.
+
+Serving systems therefore store a cache key with each prefix block. The key identifies the computation that produced the block, such as the token IDs, model version, adapter, and relevant positional-encoding or multimodal settings.
+
+</p>
+
+<h3>5.3 Block-based sharing</h3>
+
+<p>
+Serving engines commonly retain cache entries in fixed-size token blocks. A matching request can reference immutable
+prefix blocks instead of recomputing or copying them. Block sharing reduces redundant prefill computation and,
+while the blocks remain resident, avoids duplicate physical storage. A partially filled trailing block may not be
+reusable, depending on the engine's block policy.
+</p>
+
+<div class="warning">
+Prefix caching is not free memory reduction. Retained blocks consume cache capacity. Its net value depends on
+shared-prefix length, hit rate, request locality, and eviction policy.
+</div>
+
+<h2 id="quantization">6. KV-cache quantization</h2>
+
+<p>
+KV-cache quantization stores keys and values at fewer bits than BF16 or FP16. It reduces cache capacity and can
+reduce decode bandwidth when the attention kernel consumes the low-precision cache directly.
+</p>
+
+<h3>6.1 Quantization model</h3>
+
+<p>
+For a real-valued cache element <span class="math">x</span>, an affine quantizer stores an integer
+<span class="math">q</span> together with a scale <span class="math">a</span> and zero point
+<span class="math">z</span>. The scalar model is:
+</p>
+
+<div class="equation">
+  q = clip(round(x / a) + z, q<sub>min</sub>, q<sub>max</sub>)
+</div>
+
+<div class="equation">
+  x̂ = a(q − z)
+</div>
+
+<p>
+Here <span class="math">x̂</span> denotes the reconstructed value. The scale and zero point can be assigned per
+tensor, per layer, per head, per channel, per token, or per group. Finer granularity generally reduces error, but
+increases metadata and may complicate kernels.
+</p>
+
+<h3>6.2 Quantized memory</h3>
+
+<p>
+If keys use <span class="math">b<sub>K</sub></span> bits and values use
+<span class="math">b<sub>V</sub></span> bits, the low-precision payload is:
+</p>
+
+<div class="equation">
+  M<sub>KV,payload</sub> = LBT h<sub>kv</sub>d (b<sub>K</sub> + b<sub>V</sub>) / 8
+</div>
+
+<p>
+The total cache footprint includes quantization metadata:
+</p>
+
+<div class="equation">
+  M<sub>KV,quant</sub> = M<sub>KV,payload</sub> + M<sub>meta</sub>
+</div>
+
+<p>
+When both keys and values use the same bit width <span class="math">b</span>, the payload-only compression factor
+relative to BF16 is:
+</p>
+
+<div class="equation">
+  Compression<sub>payload</sub> = 16 / b
+</div>
+
+<table>
+  <tr>
+    <th>Stored K/V format</th>
+    <th>Payload bytes per key/value scalar pair</th>
+    <th>Payload-only reduction versus BF16</th>
+  </tr>
+  <tr><td>BF16 or FP16, 16 bits each</td><td>4 bytes</td><td>1×</td></tr>
+  <tr><td>FP8 or INT8, 8 bits each</td><td>2 bytes</td><td>2×</td></tr>
+  <tr><td>INT4, 4 bits each</td><td>1 byte</td><td>4×</td></tr>
+  <tr><td>INT2, 2 bits each</td><td>0.5 byte</td><td>8×</td></tr>
+</table>
+
+<h3>6.3 Accuracy and kernel effects</h3>
+
+<p>
+Quantization does not affect all cache components identically. The distributions and functional roles of keys and
+values differ, so a practical design may use different bit widths or grouping rules for them. KIVI and KVQuant
+study low-bit KV-cache quantization with asymmetric or distribution-aware design choices [3], [4].
+</p>
+
+<p>
+A smaller cache does not guarantee proportional speedup. The kernel must load quantized payloads, access scales and
+other metadata, and perform reconstruction or low-precision computation. Performance improves when this work is
+fused into the attention kernel and the reduction in GPU HBM traffic exceeds the added arithmetic and metadata cost.
+</p>
+
+<table>
+  <tr><th>Condition</th><th>Expected effect</th></tr>
+  <tr>
+    <td>Decode is GPU-HBM-bandwidth-bound and the kernel directly consumes quantized KV blocks</td>
+    <td>Reduced cache traffic can improve throughput or concurrency.</td>
+  </tr>
+  <tr>
+    <td>The cache is expanded to full precision in GPU HBM before attention</td>
+    <td>Most of the intended bandwidth saving can be lost.</td>
+  </tr>
+  <tr>
+    <td>Quantization groups are very small</td>
+    <td>Accuracy may improve, but metadata and kernel overhead can increase.</td>
+  </tr>
+  <tr>
+    <td>Bit width is too low for the model and group scheme</td>
+    <td>Quantization error can reduce model quality.</td>
+  </tr>
+</table>
+
+<h3>6.4 Quantization and prefix caching</h3>
+
+<p>
+Prefix caching and KV-cache quantization are complementary. Prefix caching reduces the number of prefix states that
+must be computed. Quantization reduces the bytes required to retain each state. A serving engine can cache and share
+quantized blocks when their model, format, and quantization parameters are compatible.
+</p>
+
+<h2 id="summary">7. Summary</h2>
+
+<p>
+A KV cache stores the keys and values of already processed tokens at every decoder layer. It avoids recomputing
+those keys and values during autoregressive decode, but grows linearly with layer count, active sequences, context
+length, key/value heads, head dimension, and bytes per scalar:
+</p>
+
+<div class="equation">
+  M<sub>KV,total</sub> = LBT h<sub>kv</sub>d(s<sub>K</sub> + s<sub>V</sub>)
+</div>
+
+<p>
+Prefix caching reuses KV states for an exact compatible prefix. It reduces redundant prefill work, but the suffix
+still attends to the cached prefix. KV-cache quantization reduces stored bytes per key/value element:
+</p>
+
+<div class="equation">
+  M<sub>KV,quant</sub> = LBT h<sub>kv</sub>d (b<sub>K</sub> + b<sub>V</sub>) / 8 + M<sub>meta</sub>
+</div>
+
+<p>
+The practical design problem is to balance cache capacity, GPU-HBM bandwidth, prefix-cache hit rate, quantization
+error, metadata overhead, and the efficiency of the attention kernel.
+</p>
+
+<h2 id="references">References</h2>
+
+<ol class="refs">
+  <li>
+    A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin,
+    “Attention is all you need,” in <em>Advances in Neural Information Processing Systems</em>, vol. 30,
+    pp. 5998–6008, 2017. Available:
+    <a href="https://proceedings.neurips.cc/paper_files/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html">NeurIPS proceedings</a>.
+  </li>
+  <li>
+    W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. E. Gonzalez, H. Zhang, and I. Stoica,
+    “Efficient memory management for large language model serving with PagedAttention,” in
+    <em>Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles</em>,
+    pp. 611–626, 2023, doi:
+    <a href="https://doi.org/10.1145/3600006.3613165">10.1145/3600006.3613165</a>.
+  </li>
+  <li>
+    Z. Liu, J. Yuan, H. Jin, S. Zhong, Z. Xu, V. Braverman, B. Chen, and X. Hu,
+    “KIVI: A tuning-free asymmetric 2bit quantization for KV cache,” in
+    <em>Proceedings of the 41st International Conference on Machine Learning</em>,
+    <em>Proceedings of Machine Learning Research</em>, vol. 235, pp. 32332–32344, 2024. Available:
+    <a href="https://proceedings.mlr.press/v235/liu24bz.html">PMLR</a>.
+  </li>
+  <li>
+    C. Hooper, S. Kim, H. Mohammadzadeh, M. W. Mahoney, Y. S. Shao, K. Keutzer, and A. Gholami,
+    “KVQuant: Towards 10 million context length LLM inference with KV cache quantization,” in
+    <em>Advances in Neural Information Processing Systems</em>, vol. 37, 2024. Available:
+    <a href="https://proceedings.neurips.cc/paper_files/paper/2024/hash/028fcbcf85435d39a40c4d61b42c99a4-Abstract-Conference.html">NeurIPS proceedings</a>.
+  </li>
+  <li>
+    vLLM Project, “Automatic Prefix Caching,” <em>vLLM Documentation</em>, accessed Jun. 20, 2026. Available:
+    <a href="https://docs.vllm.ai/en/stable/design/prefix_caching/">vLLM documentation</a>.
+  </li>
+</ol>
+
+<footer>
+  <p>© 2026. All rights reserved.</p>
+</footer>
+
+</body>
+</html>
