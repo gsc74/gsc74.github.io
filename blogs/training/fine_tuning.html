@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fine-tuning: MyLLM</title>
+<script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6">
+</script>
+<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+</script>
+<style>body{font-family:Arial,sans-serif;line-height:1.62;max-width:1080px;margin:0 auto;padding:22px;color:#111}h1,h2,h3{line-height:1.25}h1{margin-bottom:18px}a{color:#0645ad;text-decoration:none}a:hover{text-decoration:underline}.toc{background:#f8f9fb;border:1px solid #ddd;padding:14px 18px;margin:18px 0}.toc ol{margin-bottom:0}table{border-collapse:collapse;width:100%;margin:18px 0;font-size:.94em}th,td{border:1px solid #ccc;padding:8px;vertical-align:top}th{background-color:#f2f2f2}.note{background:#fff8dc;border-left:4px solid #d6a600;padding:10px;margin:12px 0}.highlight{background:#f0fff4;border-left:4px solid #38a169;padding:10px;margin:12px 0}.warning{background:#fff5f5;border-left:4px solid #e53e3e;padding:10px;margin:12px 0}.refs li{margin-bottom:10px}footer{text-align:center;margin-top:30px;font-size:.9em;color:#555}.nav{overflow-wrap:anywhere}.figure{text-align:center;margin:24px 0}.figure img{display:block;width:100%;max-width:900px;height:auto;margin:0 auto}.caption{font-size:.9em;color:#555;margin-top:8px}</style>
+</head>
+<body>
+<h1>Fine-tuning MyLLM</h1>
+<p class="nav">
+<a href="../train_index.html">Index</a> · <a href="data_prepare_params.html">Data &amp; Parameters</a> · <a href="train.html">Training</a> · <a href="pretrain.html">Pretraining</a> · <a href="fine_tuning.html">Fine-tuning</a> · <a href="inference.html">Inference</a>
+</p>
+<div class="highlight" id="brief-summary"><strong>In brief</strong><ul><li>Pretraining learns continuation; fine-tuning specifies assistant behavior.</li><li>SFT minimizes assistant-only next-token loss on curated demonstrations.</li><li>GRPO/RLVR compares sampled completions using verifier rewards and a group-relative advantage.</li><li>RLHF learns from preferences through a reward model and policy optimization; DPO optimizes preference pairs directly.</li></ul></div>
+<div class="toc">
+<strong>Table of contents</strong>
+<ol>
+<li>
+<a href="#motivation">Why pretraining is not enough</a>
+</li>
+<li>
+<a href="#sft">Supervised fine-tuning</a>
+</li>
+<li>
+<a href="#rlvr">GRPO and RLVR</a>
+</li>
+<li>
+<a href="#rlhf">RLHF and preference learning</a>
+</li>
+<li>
+<a href="#summary">Choosing a method</a>
+</li>
+<li>
+<a href="#references">References and licensing</a>
+</li>
+</ol>
+</div>
+<h2 id="motivation">1. Why pretraining is not enough</h2>
+<p>A pretrained model has learned to continue text. That is impressive, but “continue whatever came before” is not the same job as “understand my request, answer helpfully, and stop at the right moment.” If a webpage contains a question followed by three wrong forum replies, continuation training is perfectly happy to imitate the forum. Helpful assistants need a more specific target.</p>
+<p>Fine-tuning reshapes a pretrained model for that target without starting over. SFT, GRPO/RLVR, and RLHF are different sources of feedback. SFT says, “Here is a response worth imitating.” RLVR says, “Try several answers; this verifier can tell which result is correct.” RLHF says, “Humans prefer this response to that one.”</p>
+<div class="highlight">Pretraining supplies broad capability. Fine-tuning teaches how, when, and for whom that capability should be used.</div>
+<h3 id="terms">1.1 Vocabulary for fine-tuning methods</h3>
+<p>It is useful to separate three objects. A <em>policy</em> is the same language model distribution used throughout the article, written \(p_\theta(y\mid x)\), where \(x\) is the prompt or prefix and \(y\) is the generated response sequence. A <em>reward</em> is a scalar signal saying whether a completion is desirable. An <em>optimization method</em> is the rule used to update \(\theta\). Much confusion comes from mixing these levels, as if SFT, RLHF, PPO, and DPO were all the same kind of thing. They are not.</p>
+<table>
+<tr>
+<th>Term</th>
+<th>Full name</th>
+<th>Role</th>
+<th>Brief description</th>
+</tr>
+<tr>
+<td>SFT</td>
+<td>Supervised Fine-Tuning</td>
+<td>Demonstration learning</td>
+<td>Continue next-token training on curated prompt-response examples, usually masking the prompt so only assistant tokens contribute to the loss. This teaches the model the response format and behavior to imitate.</td>
+</tr>
+<tr>
+<td>RLHF</td>
+<td>Reinforcement Learning from Human Feedback</td>
+<td>Preference-based fine-tuning framework</td>
+<td>Uses human comparisons such as “answer A is better than answer B” to define what the model should prefer. Classical RLHF trains a reward model from comparisons, then optimizes the policy against that learned reward while constraining drift from a reference model.</td>
+</tr>
+<tr>
+<td>RLVR</td>
+<td>Reinforcement Learning with Verifiable Rewards</td>
+<td>Verifier-based fine-tuning framework</td>
+<td>Uses an automatically checkable reward instead of subjective human preference. For math, code, or symbolic tasks, the reward may come from exact answer matching, unit tests, theorem checkers, or rule-based graders.</td>
+</tr>
+<tr>
+<td>PPO</td>
+<td>Proximal Policy Optimization</td>
+<td>Policy optimization algorithm</td>
+<td>An RL update rule that improves expected reward while clipping large policy-ratio changes. In LLM fine-tuning, PPO is commonly paired with a KL penalty so the updated policy does not sprint away from the reference model like a caffeinated undergraduate after deadline night.</td>
+</tr>
+<tr>
+<td>DPO</td>
+<td>Direct Preference Optimization</td>
+<td>Preference optimization algorithm</td>
+<td>Optimizes chosen/rejected response pairs directly, without training a separate reward model and without running a full online RL loop. It can be read as a logistic classification objective on policy log-ratio differences relative to a reference policy.</td>
+</tr>
+<tr>
+<td>GRPO</td>
+<td>Group Relative Policy Optimization</td>
+<td>Policy optimization algorithm</td>
+<td>Samples several completions for the same prompt, scores them, and uses within-group relative advantages. This is attractive for RLVR because a verifier can score many candidate solutions and the update can compare them prompt-locally.</td>
+</tr>
+<tr>
+<td>Reward model</td>
+<td>Learned scalar preference model</td>
+<td>Reward estimator</td>
+<td>A separate model \(R_\phi(x,y)\) trained to predict human preferences. It turns pairwise judgments into a scalar reward, but the policy can exploit its errors if optimization is too aggressive.</td>
+</tr>
+<tr>
+<td>KL penalty</td>
+<td>Kullback-Leibler regularization</td>
+<td>Reference constraint</td>
+<td>A term such as \(D_{\mathrm{KL}}(p_\theta(\cdot\mid x)\Vert p_{\mathrm{ref}}(\cdot\mid x))\) that discourages the tuned model from drifting too far from the pretrained or SFT reference policy.</td>
+</tr>
+</table>
+<div class="note">A compact mental model: SFT learns from demonstrations, RLHF learns from human preferences, RLVR learns from checkable correctness, PPO and GRPO are ways to perform reward-driven policy updates, and DPO is a direct preference-pair objective.</div>
+<h2 id="sft">2. Supervised fine-tuning</h2>
+<p>SFT is the clearest place to begin: provide a user question and a high-quality assistant answer, then continue next-token training only on the assistant portion. The model is shown the behavior we want it to imitate.</p>
+<p>For a concrete example, we can form a mix of 1,306,598 examples: 145,819 MetaMathQA, 576,526 Numina, and 584,253 OpenMath; 1,293,798 train examples and 12,800 validation examples total about 572,994,124 tokens. Training can start from the pretrained checkpoint, use maximum length 4,096, and continue for 4 epochs.</p>
+<div class="figure">
+<img src="sft_mix.png" alt="Composition of SFT examples by source">
+<p class="caption">Figure 1. Source composition of the 1.306M-example SFT mixture, shown as both percentage share and exact count.</p>
+</div>
+<p>The sequence is bos and system role, system instruction, end and user role, question, end and assistant role, answer, then end and eos. Only assistant tokens contribute to loss: masking the prompt prevents the model from being rewarded for parroting the question. Answers finish in a boxed form so their terminal result is easy to locate.</p>
+<h3>2.1 Assistant-only empirical risk</h3>
+<p>Let a formatted example be \(x_{1:T}\), and let \(m_t=1\) only when target \(x_{t+1}\) belongs to the assistant response. The SFT objective is</p>
+<p>\[\mathcal L_{\mathrm{SFT}}(\theta)=-\frac{1}{\sum_t m_t}\sum_{t=1}^{T-1}m_t\log p_\theta(x_{t+1}\mid x_{1:t}).\]</p>
+<p>System and user tokens remain in the conditioning prefix, so they influence every assistant prediction, but their own next-token errors do not contribute to the objective. This separates conditioning information from supervised output. Without the mask, the model spends optimization capacity reconstructing prompts that will already be supplied at inference time.</p>
+<h3>2.2 Data weighting</h3>
+<p>If source \(s\) contributes distribution \(\widehat{\mathcal D}_s\) with sampling weight \(w_s\), then the effective training risk is</p>
+<p>\[\widehat R_{\mathrm{SFT}}(\theta)=\sum_s w_s\,\mathbb E_{x\sim\widehat{\mathcal D}_s}[\mathcal L_{\mathrm{SFT}}(x;\theta)],\qquad \sum_s w_s=1.\]</p>
+<p>Raw source counts implicitly determine \(w_s\) under uniform example sampling. Explicit reweighting changes the optimized distribution even if the underlying examples are unchanged.</p>
+<h2 id="rlvr">3. GRPO and verifiable rewards</h2>
+<p>RLVR optimizes correctness that a verifier can check, rather than resemblance to a reference solution. For each prompt, sample a group of \(n_{\mathrm{grp}}=48\) completions and assign \(R_i=1\) when the final answer is correct and \(0\) otherwise. The relative advantage is</p>
+<p>\[A_i=\frac{R_i-\mu_R}{\sigma_R+\varepsilon_R}.\]</p>
+<p>For example, we can limit each policy-ratio update to \(1\pm0.2\) and apply a per-token KL penalty of \(0.05\) to discourage drift from a frozen reference. We can use 3 prompts per step, at most 384 generated tokens, temperature 0.9, top-p 0.95, learning rate \(8\times10^{-7}\), and at most 500 steps. Sparse binary reward needs a capable starting policy: if every completion fails, all within-group advantages carry essentially no directional signal.</p>
+<h3>3.1 Group-relative estimator</h3>
+<p>For prompt \(x\), sample \(y_i\sim p_{\mathrm{old}}(\cdot\mid x)\) for \(i=1,\ldots,n_{\mathrm{grp}}\). Define</p>
+<p>\[\mu_R=\frac{1}{n_{\mathrm{grp}}}\sum_i R_i,\qquad \sigma_R^2=\frac{1}{n_{\mathrm{grp}}}\sum_i(R_i-\mu_R)^2.\]</p>
+<p>Subtracting \(\mu_R\) provides a prompt-local baseline. It preserves the expected policy-gradient direction while reducing variance. Dividing by \(\sigma_R+\varepsilon_R\) normalizes reward scale across prompts. If every completion receives the same reward, then \(A_i=0\) for all \(i\); that prompt supplies no relative learning signal.</p>
+<h3>3.2 Clipped policy objective</h3>
+<p>For completion token \(y_{i,t}\), define the importance ratio</p>
+<p>\[\rho_{i,t}(\theta)=\frac{p_\theta(y_{i,t}\mid x,y_{i,&lt;t})}{p_{\mathrm{old}}(y_{i,t}\mid x,y_{i,&lt;t})}.\]</p>
+<p>A GRPO-style objective maximizes</p>
+<p>\[\mathcal J_{\mathrm{GRPO}}(\theta)=\frac{1}{n_{\mathrm{grp}}}\sum_i\frac{1}{|y_i|}\sum_t\min\!\left(\rho_{i,t}A_i,\operatorname{clip}(\rho_{i,t},1-\epsilon_{\mathrm{clip}},1+\epsilon_{\mathrm{clip}})A_i\right)-\lambda_{\mathrm{KL}}D_{\mathrm{KL}}(p_\theta(\cdot\mid x)\Vert p_{\mathrm{ref}}(\cdot\mid x)).\]</p>
+<p>Clipping limits the incentive for a single batch to move the policy far from the sampling policy. The KL term limits drift from the frozen reference. With \(\epsilon_{\mathrm{clip}}=0.2\) and \(\lambda_{\mathrm{KL}}=0.05\), the two controls address different failure modes: stale-sample instability and global policy drift.</p>
+<h2 id="rlhf">4. RLHF and preference learning</h2>
+<p>Classical RLHF learns a scalar preference reward and optimizes it with PPO. DPO instead learns directly from 73,874 chosen/rejected pairs for 1 epoch with \(\beta_{\mathrm{DPO}}=0.1\). Its sketch is</p>
+<p>\[\mathcal L_{\mathrm{DPO}}=-\log\sigma\!\left(\beta_{\mathrm{DPO}}\left[\log\frac{p_\theta(y^+\mid x)}{p_{\mathrm{ref}}(y^+\mid x)}-\log\frac{p_\theta(y^-\mid x)}{p_{\mathrm{ref}}(y^-\mid x)}\right]\right).\]</p>
+<h3>4.1 Reward-model-based RLHF</h3>
+<p>Given prompt \(x\), preferred response \(y^+\), and rejected response \(y^-\), a Bradley-Terry reward model assumes</p>
+<p>\[\Pr(y^+\succ y^-\mid x)=\sigma\!\left(R_\phi(x,y^+)-R_\phi(x,y^-)\right).\]</p>
+<p>The reward model minimizes pairwise logistic loss. A policy optimizer then approximately maximizes expected learned reward subject to a reference-policy constraint:</p>
+<p>\[\max_\theta\;\mathbb E_{x,y\sim p_\theta}[R_\phi(x,y)]-\lambda D_{\mathrm{KL}}(p_\theta(\cdot\mid x)\Vert p_{\mathrm{ref}}(\cdot\mid x)).\]</p>
+<p>This separates preference estimation from policy optimization, but errors in \(R_\phi\) can be exploited by the policy, a phenomenon often called reward hacking.</p>
+<h3>4.2 DPO as direct preference classification</h3>
+<p>DPO removes the explicit learned reward and compares policy log-ratios directly. For one pair, define</p>
+<p>\[\Delta_\theta=\log p_\theta(y^+\mid x)-\log p_\theta(y^-\mid x),\qquad \Delta_{\mathrm{ref}}=\log p_{\mathrm{ref}}(y^+\mid x)-\log p_{\mathrm{ref}}(y^-\mid x).\]</p>
+<p>Then</p>
+<p>\[\mathcal L_{\mathrm{DPO}}=-\log\sigma\!\left(\beta_{\mathrm{DPO}}(\Delta_\theta-\Delta_{\mathrm{ref}})\right).\]</p>
+<p>The reference term prevents the objective from rewarding arbitrary probability shifts already present in the base model. The coefficient \(\beta_{\mathrm{DPO}}\) controls the scale of deviation from that reference.</p>
+<h2 id="summary">5. Choosing a method</h2>
+<table>
+<tr>
+<th>Stage</th>
+<th>Optimizes</th>
+</tr>
+<tr>
+<td>SFT</td>
+<td>Likelihood of curated assistant responses.</td>
+</tr>
+<tr>
+<td>RLVR</td>
+<td>Verifier-checked outcome correctness relative to sampled peers.</td>
+</tr>
+<tr>
+<td>RLHF / DPO</td>
+<td>Human preferences, through a learned reward or direct pairwise objective.</td>
+</tr>
+</table>
+<h2 id="references">6. References and licensing</h2>
+<ul class="refs">
+<li>
+<a href="https://huggingface.co/datasets/meta-math/MetaMathQA">MetaMathQA</a>: MIT license.</li>
+<li>
+<a href="https://huggingface.co/datasets/AI-MO/NuminaMath-CoT">NuminaMath-CoT</a>: Apache License 2.0.</li>
+<li>
+<a href="https://huggingface.co/datasets/nvidia/OpenMathInstruct-2">OpenMathInstruct-2</a>: Creative Commons Attribution 4.0.</li>
+<li>Shao et al., <a href="https://arxiv.org/abs/2402.03300">DeepSeekMath</a>, for Group Relative Policy Optimization.</li>
+<li>Rafailov et al., <a href="https://arxiv.org/abs/2305.18290">Direct Preference Optimization</a>, for DPO.</li>
+<li>Ouyang et al., <a href="https://arxiv.org/abs/2203.02155">Training language models to follow instructions with human feedback</a>, for reward-model-based RLHF.</li>
+<li>The preference-pair sources are <a href="https://huggingface.co/datasets/argilla/distilabel-math-preference-dpo">distilabel-math-preference-dpo</a> (Apache-2.0), <a href="https://huggingface.co/datasets/HuggingFaceH4/ultrafeedback_binarized">UltraFeedback Binarized</a> (MIT), and <a href="https://huggingface.co/datasets/Intel/orca_dpo_pairs">Orca DPO Pairs</a> (Apache-2.0). The verifiable-reward prompt source is <a href="https://huggingface.co/datasets/openai/gsm8k">GSM8K</a> (MIT).</li>
+<li>Canonical texts: <a href="https://opensource.org/license/mit">MIT</a>, <a href="https://www.apache.org/licenses/LICENSE-2.0">Apache-2.0</a>, and <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>.</li>
+</ul>
+<div class="warning">A mixed dataset does not acquire one new blanket license. Attribution, notice, redistribution, and share requirements must be tracked per source; CC BY 4.0 content in particular requires attribution.</div>
+<footer>&copy; 2026. All rights reserved.</footer>
+</body>
+</html>

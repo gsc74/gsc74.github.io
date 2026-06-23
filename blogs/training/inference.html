@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Inference: MyLLM</title>
+<script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6">
+</script>
+<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+</script>
+<style>body{font-family:Arial,sans-serif;line-height:1.62;max-width:1080px;margin:0 auto;padding:22px;color:#111}h1,h2,h3{line-height:1.25}h1{margin-bottom:18px}a{color:#0645ad;text-decoration:none}a:hover{text-decoration:underline}.toc{background:#f8f9fb;border:1px solid #ddd;padding:14px 18px;margin:18px 0}.toc ol{margin-bottom:0}table{border-collapse:collapse;width:100%;margin:18px 0;font-size:.94em}th,td{border:1px solid #ccc;padding:8px;vertical-align:top}th{background-color:#f2f2f2}.note{background:#fff8dc;border-left:4px solid #d6a600;padding:10px;margin:12px 0}.highlight{background:#f0fff4;border-left:4px solid #38a169;padding:10px;margin:12px 0}.warning{background:#fff5f5;border-left:4px solid #e53e3e;padding:10px;margin:12px 0}.refs li{margin-bottom:10px}footer{text-align:center;margin-top:30px;font-size:.9em;color:#555}.nav{overflow-wrap:anywhere}</style>
+</head>
+<body>
+<h1>Inference with MyLLM</h1>
+<p class="nav">
+<a href="../train_index.html">Index</a> · <a href="data_prepare_params.html">Data &amp; Parameters</a> · <a href="train.html">Training</a> · <a href="pretrain.html">Pretraining</a> · <a href="fine_tuning.html">Fine-tuning</a> · <a href="inference.html">Inference</a>
+</p>
+<div class="highlight" id="brief-summary"><strong>In brief</strong><ul><li>Prefill processes the prompt in parallel; decode generates one token per sequential step.</li><li>BF16 weights occupy approximately 2.11 GB before metadata, while the batch-one 8,192-token BF16 KV cache occupies 224 MiB.</li><li>Batch-one decode has low arithmetic intensity and is commonly limited by HBM bandwidth.</li><li>Q8 and Q4 quantization reduce approximate raw weight storage to 1.06 GB and 0.53 GB, respectively.</li></ul></div>
+<div class="toc">
+<strong>Table of contents</strong>
+<ol>
+<li>
+<a href="#motivation">Why inference is a different problem</a>
+</li>
+<li>
+<a href="#math">Single-GPU memory and computation</a>
+</li>
+<li>
+<a href="#hf">HuggingFace format</a>
+</li>
+<li>
+<a href="#gguf">GGUF</a>
+</li>
+<li>
+<a href="#ollama">Ollama: Local GUI for GGUF Models</a>
+</li>
+<li>
+<a href="#references">References and licensing</a>
+</li>
+</ol>
+</div>
+<h2 id="motivation">1. Why inference is a different problem</h2>
+<p>Training teaches the model; inference is the moment we actually ask it for something. The parameters are unchanged, but the execution profile is different. Training processes many token positions in parallel and exposes large matrix multiplications with high accelerator utilization. Autoregressive generation usually emits one token, appends it to the context, and launches the next decode step. Autocomplete is patient; users are less famous for that quality.</p>
+<p>Inference therefore depends on time to first token, inter-token latency, HBM memory bandwidth, arithmetic intensity, model format, and device-memory capacity. Arithmetic intensity is the number of arithmetic operations performed per byte transferred from memory. Batch-one decode has low arithmetic intensity because it repeatedly reads model weights and KV-cache entries for relatively little computation; it is commonly memory-bandwidth-bound. Quantization reduces weight traffic, while the KV cache and runtime determine additional memory and latency costs.</p>
+<h2 id="math">2. Single-GPU memory and computation</h2>
+<p>Prefill sets \(T_q=T\): it processes all prompt positions in parallel, computes attention over the prompt, and materializes the initial keys and values. Decode sets \(T_q=1\): each layer computes one new query while reading keys and values for the complete cached context. With grouped-query attention, the BF16 cache is</p>
+<p>\[M_{KV}=2LBh_{kv}dTs.\]</p>
+<p>For batch \(B=1\),</p>
+<p>\[M_{KV}=2(28)(1)(2)(128)(8192)(2)=234{,}881{,}024\text{ bytes}\approx224\text{ MiB}.\]</p>
+<p>The device-memory budget contains model weights, KV-cache tensors, temporary activations, and runtime workspaces. At batch one, every decode step streams the weights and growing KV cache through the memory hierarchy. The low ratio of floating-point operations to transferred bytes makes sustained HBM bandwidth, rather than peak FLOP/s, the common throughput limit.</p>
+<h3>2.1 Prefill complexity</h3>
+<p>For each layer, dense projections and the feed-forward network scale linearly with prompt length, while exact attention scales quadratically:</p>
+<p>\[C_{\mathrm{prefill}}=O\!\left(BT(2D^2+2Dh_{kv}d+3DD_{ff})+Bh_qT^2d\right).\]</p>
+<p>Prefill exposes matrix-matrix products over \(T\) positions and can achieve comparatively high arithmetic intensity. Its latency determines time to first token together with tokenization, host-to-device transfer, and runtime launch overhead.</p>
+<h3>2.2 Decode complexity</h3>
+<p>At one decode step, \(T_q=1\). Projection and feed-forward work no longer scale with current context, but attention must read all cached keys and values:</p>
+<p>\[C_{\mathrm{decode}}=O\!\left(B(2D^2+2Dh_{kv}d+3DD_{ff})+Bh_qTd\right).\]</p>
+<p>For \(G_{\mathrm{dec}}\) generated tokens after prompt length \(T_0\), total attention work is proportional to</p>
+<p>\[\sum_{g=1}^{G_{\mathrm{dec}}}(T_0+g-1)=G_{\mathrm{dec}}T_0+\frac{G_{\mathrm{dec}}(G_{\mathrm{dec}}-1)}{2}.\]</p>
+<p>Generation is therefore linear in prompt length per new token and quadratic in generated length when summed over a long continuation.</p>
+<h3>2.3 Roofline lower bound</h3>
+<p>Let \(S_w\) be bytes of weights read per decode step, \(S_{KV}(T)\) bytes of cache traffic, and \(\mathrm{BW}_{\mathrm{HBM}}\) sustained memory bandwidth. A bandwidth-only latency lower bound is</p>
+<p>\[t_{\mathrm{token}}\ge\frac{S_w+S_{KV}(T)}{\mathrm{BW}_{\mathrm{HBM}}}.\]</p>
+<p>BF16 MyLLM weights occupy approximately \(2N=2.11\) GB before metadata. At batch one, little weight reuse exists across independent sequences, so quantizing weights reduces both capacity demand and mandatory HBM traffic. This is why quantization can improve decode speed even when the hardware has abundant peak FLOP/s.</p>
+<div style="text-align:center;margin:24px 0">
+<img src="kv_cache.png" alt="KV-cache memory at five context lengths" style="display:block;width:100%;max-width:900px;height:auto;margin:0 auto">
+<p style="font-size:.9em;color:#555">Figure 1. With fixed layers, KV heads, and head dimension, cache memory scales linearly from 14 MiB at 512 tokens to 224 MiB at 8,192.</p>
+</div>
+<section id="huggingface-transformers">
+  <h2>3. Hugging Face Transformers</h2>
+  <p>
+    Hugging Face Transformers is the native Python interface for loading,
+    running, fine-tuning, and serving the trained model. It combines the model
+    architecture, tokenizer, special tokens, and chat template so prompts are
+    encoded exactly as expected by the model.
+  </p>
+  <p>
+    This is the preferred path for GPU-backed inference, experimentation, and
+    production deployments that benefit from PyTorch, batching, streaming, and
+    optimized serving frameworks.
+  </p>
+</section>
+<!-- 
+<h2 id="gguf">4. GGUF and llama.cpp</h2>
+<table>
+<tr>
+<th>Artifact</th>
+<th>Tradeoff</th>
+</tr>
+<tr>
+<td>MyLLM-1B.gguf</td>
+<td>Full precision; largest footprint and closest numerical representation.</td>
+</tr>
+<tr>
+<td>MyLLM-1B-Q8_0.gguf</td>
+<td>Eight-bit block quantization; roughly \(1.1\) GB of raw weights plus metadata and runtime state.</td>
+</tr>
+<tr>
+<td>MyLLM-1B-Q4_K_M.gguf</td>
+<td>Mixed four-bit K-quant blocks; roughly \(0.55\) GB of raw weights, with a stronger compression tradeoff.</td>
+</tr>
+</table>
+<div style="text-align:center;margin:24px 0">
+<img src="quant_memory.png" alt="Approximate weight memory for BF16, Q8, and Q4" style="display:block;width:100%;max-width:900px;height:auto;margin:0 auto">
+<p style="font-size:.9em;color:#555">Figure 2. Approximate raw weight storage before metadata, KV cache, and runtime buffers.</p>
+</div>
+<p>K-quants group weights into blocks and preserve more precision where it matters. llama.cpp can place layers on CPU, GPU, or both; actual memory exceeds raw weight arithmetic because metadata, cache, and scratch buffers are also required.</p>
+<h3>4.1 Quantization model</h3>
+<p>For a block of real weights \(w\), a simple symmetric \(b\)-bit quantizer chooses scale \(\alpha&gt;0\) and integer codes</p>
+<p>\[q_i=\operatorname{clip}\!\left(\operatorname{round}(w_i/\alpha),-2^{b-1},2^{b-1}-1\right),\qquad \widehat w_i=\alpha q_i.\]</p>
+<p>The quantization error is \(e_i=w_i-\widehat w_i\). Blockwise schemes choose separate scales so a large outlier in one region does not reduce resolution everywhere. K-quants use structured blocks and mixed treatment of sub-blocks; the exact storage includes codes, scales, and metadata rather than precisely \(bN/8\) bytes.</p>
+<h3>4.2 Capacity arithmetic</h3>
+<p>Ignoring metadata, \(N=1.055\)B parameters require approximately</p>
+<p>\[S_{\mathrm{BF16}}=2N\approx2.11\text{ GB},\qquad S_{\mathrm{Q8}}=N\approx1.06\text{ GB},\qquad S_{\mathrm{Q4}}=N/2\approx0.53\text{ GB}.\]</p>
+<p>Quantization changes weight storage, weight bandwidth, and numerical error. It does not change the number of Transformer operations, and it does not automatically quantize the KV cache.</p> -->
+
+<h2 id="gguf">4. GGUF</h2>
+
+<p>
+  GGUF is a portable inference format for distributing the same trained model
+  across laptops, phones, and workstations. It can store the model in raw BF16
+  form for maximum numerical fidelity, or in quantized variants such as Q8 and
+  Q4 to reduce memory use for local deployment.
+</p>
+
+<table>
+  <tr>
+    <th>Artifact</th>
+    <th>Trade-off</th>
+  </tr>
+  <tr>
+    <td>MyLLM-1B.gguf</td>
+    <td>
+      BF16 weights; largest footprint and the closest numerical representation
+      of the original trained checkpoint.
+    </td>
+  </tr>
+  <tr>
+    <td>MyLLM-1B-Q8_0.gguf</td>
+    <td>
+      Eight-bit quantized weights; about \(1.1\) GB of raw weights before
+      metadata, KV cache, and runtime buffers. A good balance of quality and
+      local memory use.
+    </td>
+  </tr>
+  <tr>
+    <td>MyLLM-1B-Q4_K_M.gguf</td>
+    <td>
+      Mixed four-bit K-quant weights; about \(0.55\) GB of raw weights before
+      metadata, KV cache, and runtime buffers. More portable, with a stronger
+      compression trade-off.
+    </td>
+  </tr>
+</table>
+
+<div style="text-align:center;margin:24px 0">
+  <img
+    src="quant_memory.png"
+    alt="Approximate weight memory for BF16, Q8, and Q4 GGUF variants"
+    style="display:block;width:100%;max-width:900px;height:auto;margin:0 auto"
+  >
+  <p style="font-size:.9em;color:#555">
+    Figure 2. Approximate raw weight storage for BF16, Q8, and Q4 GGUF
+    variants of the same trained model, before metadata, KV cache, and runtime
+    buffers.
+  </p>
+</div>
+
+<p>
+  GGUF allows one model to be served locally without a full Python deployment.
+  BF16 is appropriate for high-memory workstations and servers; Q8 offers
+  higher-quality local inference with lower memory requirements; and Q4 makes
+  the model practical on consumer laptops and mobile-class devices.
+</p>
+
+<p>
+  GGUF models can also be loaded with Ollama to provide a complete local
+  graphical chat interface. This offers a private, self-contained way to run
+  the model on a personal machine while retaining a familiar chat workflow.
+</p>
+
+<h3>4.1 Quantization model</h3>
+
+<p>
+  Quantization stores an approximation of the original floating-point weights
+  using fewer bits. For a block of real weights \(w\), a simple symmetric
+  \(b\)-bit quantizer chooses a scale \(\alpha&gt;0\) and integer codes:
+</p>
+
+<p>
+  \[
+    q_i=\operatorname{clip}\!\left(
+      \operatorname{round}(w_i/\alpha),
+      -2^{b-1},
+      2^{b-1}-1
+    \right),
+    \qquad
+    \widehat w_i=\alpha q_i.
+  \]
+</p>
+
+<p>
+  The quantization error is \(e_i=w_i-\widehat w_i\). Blockwise schemes use
+  separate scales for groups of weights so that a large outlier does not reduce
+  precision across the entire tensor. K-quants use structured blocks and
+  mixed treatment of sub-blocks; their true size includes codes, scales, and
+  metadata rather than exactly \(bN/8\) bytes.
+</p>
+
+<h3>4.2 Capacity arithmetic</h3>
+
+<p>
+  Ignoring metadata, a model with \(N=1.055\) billion parameters requires
+  approximately:
+</p>
+
+<p>
+  \[
+    S_{\mathrm{BF16}}=2N\approx2.11\text{ GB},
+    \qquad
+    S_{\mathrm{Q8}}=N\approx1.06\text{ GB},
+    \qquad
+    S_{\mathrm{Q4}}=N/2\approx0.53\text{ GB}.
+  \]
+</p>
+
+<p>
+  Quantization reduces model-weight storage and memory bandwidth, but it does
+  not automatically reduce the KV cache. Available memory must still cover
+  model weights, tokenizer and metadata, the KV cache for the selected context
+  length, and runtime buffers.
+</p>
+
+
+<h2 id="ollama">5. Ollama: Local GUI for GGUF Models</h2>
+<p>
+  GGUF models can also be used through Ollama, which provides a simple local
+  runtime and a full desktop-style chat experience through compatible GUI
+  clients. This makes it easy to run the model privately on a laptop or
+  workstation without managing a Python environment or a remote server.
+</p>
+<p>
+  Quantized GGUF variants make local deployment practical on consumer hardware.
+  Lower-bit formats reduce model-weight memory, while higher-precision variants
+  trade additional memory for lower quantization error. Available RAM must
+  still cover the model weights, the KV cache for the selected context length,
+  and runtime overhead.
+</p>
+<div class="note">
+  Quantization reduces model-weight memory, but does not automatically shrink
+  the KV cache. Context length remains an independent memory and performance
+  setting.
+</div>
+
+<h2 id="references">6. References and licensing</h2>
+<ul class="refs">
+<li>
+<a href="https://huggingface.co/docs/safetensors/index">Hugging Face Safetensors documentation</a>, for the checkpoint serialization format.</li>
+<li>
+<a href="https://github.com/ggerganov/ggml/blob/master/docs/gguf.md">GGUF specification</a>, for the model container format.</li>
+<li>
+<a href="https://github.com/ggerganov/llama.cpp">llama.cpp</a>: MIT license.</li>
+<li>
+<a href="https://ollama.com/">Ollama</a>: runtime project distributed under the MIT license.</li>
+</ul>
+<div class="warning">Software licenses and model licenses are separate. MIT licensing of llama.cpp or Ollama does not grant rights to model weights or training data. No standalone redistribution license for the MyLLM weights is declared by this article; the copyright notice is not a grant of reuse rights.</div>
+<footer>&copy; 2026. All rights reserved.</footer>
+</body>
+</html>

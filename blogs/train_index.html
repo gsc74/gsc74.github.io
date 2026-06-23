@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>How to train your first LLM?</title>
+    <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async
+            src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+    </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.62;
+            max-width: 1080px;
+            margin: 0 auto;
+            padding: 22px;
+            color: #111;
+        }
+        h1, h2, h3 { line-height: 1.25; }
+        h1 { margin-bottom: 18px; }
+        a { color: #0645ad; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .toc {
+            background: #f8f9fb;
+            border: 1px solid #ddd;
+            padding: 14px 18px;
+            margin: 18px 0;
+        }
+        .toc ol { margin-bottom: 0; }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 18px 0;
+            font-size: 0.94em;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 8px;
+            vertical-align: top;
+        }
+        th { background-color: #f2f2f2; }
+        .note {
+            background: #fff8dc;
+            border-left: 4px solid #d6a600;
+            padding: 10px;
+            margin: 12px 0;
+        }
+        .highlight {
+            background: #f0fff4;
+            border-left: 4px solid #38a169;
+            padding: 10px;
+            margin: 12px 0;
+        }
+        .warning {
+            background: #fff5f5;
+            border-left: 4px solid #e53e3e;
+            padding: 10px;
+            margin: 12px 0;
+        }
+        .refs li { margin-bottom: 10px; }
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 0.9em;
+            color: #555;
+        }
+        .nav { overflow-wrap: anywhere; }
+    </style>
+</head>
+<body>
+
+<h1>How to train your first LLM?</h1>
+
+<p class="nav"><a href="train_index.html">Index</a> · <a href="training/data_prepare_params.html">Data &amp; Parameters</a> · <a href="training/train.html">Training</a> · <a href="training/pretrain.html">Pretraining</a> · <a href="training/fine_tuning.html">Fine-tuning</a> · <a href="training/inference.html">Inference</a></p>
+
+<div class="highlight" id="brief-summary"><strong>In brief</strong><ul><li>Start with documents, train a tokenizer, and choose an architecture whose parameter count, context length, and memory cost satisfy explicit constraints.</li><li>Train the decoder by predicting every next token with cross-entropy, then distribute the same global-batch gradient across 8 GPUs.</li><li>Use SFT to teach response behavior, verifiable-reward RL to optimize checkable correctness, and preference learning to represent human choices.</li><li>At inference, prefill is highly parallel; batch-one decode is commonly limited by HBM bandwidth and KV-cache traffic.</li></ul><p>The worked design has 1,055,231,744 parameters, a 65,536-token vocabulary, an 8,192-token context, and 12.54B tokenizer-derived pretraining tokens.</p></div>
+
+<div class="toc">
+    <strong>Table of contents</strong>
+    <ol>
+        <li><a href="#motivation">Why train a language model?</a></li>
+        <li><a href="#learning">What this article explains</a></li>
+        <li><a href="#lifecycle">The complete learning path</a></li>
+        <li><a href="#questions">The central design questions</a></li>
+        <li><a href="#reading">How to use this article</a></li>
+        <li><a href="#references">References and licensing</a></li>
+    </ol>
+</div>
+
+<h2 id="motivation">1. Why train a language model?</h2>
+
+<p>
+Many of us use language models every day. We ask for an explanation, complain when the answer is too long, ask again,
+and somehow expect the machine not to take it personally. Running inference is now ordinary. Training the model that
+makes inference possible is still mostly hidden behind model names, API calls, and a progress bar somebody else watched.
+</p>
+
+<p>
+This article opens that box. We will ask how text becomes tokens, how tokens become vectors, how attention lets one
+position use another, why prediction error becomes a gradient, why several GPUs must agree on an update, why a
+pretrained model still needs fine-tuning, and why generation has different bottlenecks from training. MyLLM gives us a
+concrete model near one billion parameters, large enough to expose real constraints and small enough to calculate.
+</p>
+
+<div class="highlight">
+The objective is not to memorize one configuration. It is to learn how to derive a defensible configuration from a
+task, a dataset, a compute budget, and an intended inference environment.
+</div>
+
+<h2 id="learning">2. What this article explains</h2>
+
+<p>
+The article develops a connected account of language-model training from first principles. By the end, we should be
+able to reason about the following chain:
+</p>
+
+<p>
+\[
+\text{documents}
+\longrightarrow \text{tokens}
+\longrightarrow \text{training sequences}
+\longrightarrow \text{next-token loss}
+\longrightarrow \text{parameter updates}
+\longrightarrow \text{aligned responses}
+\longrightarrow \text{inference}.
+\]
+</p>
+
+<p>
+Each arrow changes the constraints on the next stage. Vocabulary size affects the embedding matrix and the random
+initialization loss. Context length affects both attention computation and KV-cache memory. Global batch size affects
+gradient noise and learning-rate selection. Quantization changes deployment memory but does not automatically reduce
+the cache. The point of an end-to-end treatment is to make these connections explicit.
+</p>
+
+<h2 id="lifecycle">3. The complete learning path</h2>
+
+<table>
+    <tr><th>Chapter</th><th>Primary question</th><th>What we learn to derive</th></tr>
+    <tr>
+        <td><a href="training/data_prepare_params.html">Data &amp; Parameters</a></td>
+        <td>What should the model learn from, and what architecture fits the objective?</td>
+        <td>Corpus statistics, tokenizer design, context length, parameter budget, Transformer dimensions, and scaling-law token targets.</td>
+    </tr>
+    <tr>
+        <td><a href="training/train.html">Training</a></td>
+        <td>What numerical operation turns a sequence into a learning signal?</td>
+        <td>The autoregressive factorization, forward pass, cross-entropy, perplexity, gradients, and parameter updates.</td>
+    </tr>
+    <tr>
+        <td><a href="training/pretrain.html">Pretraining</a></td>
+        <td>How can the mathematical objective be optimized efficiently across GPUs?</td>
+        <td>Data parallelism, global tokens per step, memory constraints, schedules, throughput, and convergence diagnostics.</td>
+    </tr>
+    <tr>
+        <td><a href="training/fine_tuning.html">Fine-tuning</a></td>
+        <td>How can next-token prediction be transformed into useful assistant behavior?</td>
+        <td>Assistant-only supervised loss, verifiable rewards, group-relative advantages, KL control, and preference objectives.</td>
+    </tr>
+    <tr>
+        <td><a href="training/inference.html">Inference</a></td>
+        <td>What happens after training when the model must generate one token at a time?</td>
+        <td>Prefill, decode, KV-cache size, memory bandwidth, checkpoint formats, quantization, and local deployment.</td>
+    </tr>
+</table>
+
+<h2 id="questions">4. The central design questions</h2>
+
+<h3>4.1 Capacity</h3>
+<p>
+More parameters provide more representational capacity, but they also increase training computation, optimizer state,
+checkpoint size, and inference bandwidth. We therefore ask not merely whether a larger model is better, but whether
+its added capacity is supported by enough data and compute.
+</p>
+
+<h3>4.2 Data</h3>
+<p>
+A model does not learn an abstract language in isolation; it approximates the distribution represented by its corpus.
+Dataset composition, cleaning, tokenization, and sequence packing therefore define the learning problem as strongly as
+the architecture does.
+</p>
+
+<h3>4.3 Optimization</h3>
+<p>
+The loss function supplies a local direction, not a guarantee of useful learning. Batch size, learning rate, warmup,
+weight decay, gradient clipping, and the number of exposed tokens determine whether billions of small updates form a
+stable trajectory.
+</p>
+
+<h3>4.4 Deployment</h3>
+<p>
+Training and inference reward different properties. Training benefits from parallel processing across all sequence
+positions; autoregressive decode produces one new token at a time and is often limited by HBM memory bandwidth, the
+rate at which weights and KV-cache entries can be read from high-bandwidth memory. A good
+design anticipates this asymmetry before training begins.
+</p>
+
+<div class="note">
+Throughout the article, fixed MyLLM values provide a worked example. They should be read as quantities to explain and
+recalculate, not as universal defaults for every language model.
+</div>
+
+<h2 id="reading">5. How to use this article</h2>
+
+<p>
+The chapters are cumulative. Data and architecture establish the symbols and dimensions used by the training
+mathematics. The training objective then makes the distributed pretraining measurements interpretable. Fine-tuning
+extends the same probabilistic model with different supervision, and inference shows how the architectural choices
+reappear as concrete memory and latency costs.
+</p>
+
+<p>
+A useful reading habit is to pause at every numerical choice and ask three questions: what quantity constrains it,
+what would become more expensive if it increased, and what capability might be lost if it decreased? That habit is
+the transferable skill this article is designed to develop.
+</p>
+
+<h2 id="references">6. References and licensing</h2>
+<ul class="refs">
+    <li>Vaswani et al., <a href="https://arxiv.org/abs/1706.03762">Attention Is All You Need</a>, introduces the Transformer architecture used as the conceptual foundation of this article.</li>
+    <li>Hoffmann et al., <a href="https://arxiv.org/abs/2203.15556">Training Compute-Optimal Large Language Models</a>, provides the scaling-law framework discussed in the data chapter.</li>
+</ul>
+<div class="note">Article prose and original figures are &copy; 2026, all rights reserved. External papers, datasets, software, trademarks, and documentation remain under their respective owners and licenses. Citation or discussion does not relicense third-party material.</div>
+
+<footer>&copy; 2026. All rights reserved.</footer>
+</body>
+</html>

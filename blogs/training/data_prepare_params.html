@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Data and Parameters: MyLLM</title>
+<script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6">
+</script>
+<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+</script>
+<style>body{font-family:Arial,sans-serif;line-height:1.62;max-width:1080px;margin:0 auto;padding:22px;color:#111}h1,h2,h3{line-height:1.25}h1{margin-bottom:18px}a{color:#0645ad;text-decoration:none}a:hover{text-decoration:underline}.toc{background:#f8f9fb;border:1px solid #ddd;padding:14px 18px;margin:18px 0}.toc ol{margin-bottom:0}table{border-collapse:collapse;width:100%;margin:18px 0;font-size:.94em}th,td{border:1px solid #ccc;padding:8px;vertical-align:top}th{background-color:#f2f2f2}.note{background:#fff8dc;border-left:4px solid #d6a600;padding:10px;margin:12px 0}.highlight{background:#f0fff4;border-left:4px solid #38a169;padding:10px;margin:12px 0}.warning{background:#fff5f5;border-left:4px solid #e53e3e;padding:10px;margin:12px 0}.refs li{margin-bottom:10px}footer{text-align:center;margin-top:30px;font-size:.9em;color:#555}.nav{overflow-wrap:anywhere}.figure{text-align:center;margin:24px 0}.figure img{display:block;width:100%;max-width:900px;height:auto;margin:0 auto}.caption{font-size:.9em;color:#555;margin-top:8px}</style>
+</head>
+<body>
+<h1>Data and parameters</h1>
+<p class="nav">
+<a href="../train_index.html">Index</a> · <a href="data_prepare_params.html">Data &amp; Parameters</a> · <a href="train.html">Training</a> · <a href="pretrain.html">Pretraining</a> · <a href="fine_tuning.html">Fine-tuning</a> · <a href="inference.html">Inference</a>
+</p>
+<div class="highlight" id="brief-summary"><strong>In brief</strong><ul><li>OpenWebMath contributes 6,315,233 documents; MyLLM's tokenizer converts them into 12,540,116,992 tokens.</li><li>Fixing a roughly one-billion-parameter design band leads to \(V=65{,}536\), \(D=1{,}792\), \(L=28\), 14 query heads, 2 KV heads, and \(D_{ff}=4{,}864\).</li><li>Exact accounting gives 117,440,512 embedding parameters and 33,492,480 parameters per block, totaling 1,055,231,744.</li><li>The corpus supplies approximately 59% of the 21.10B-token Chinchilla reference.</li></ul></div>
+<div class="toc">
+<strong>Table of contents</strong>
+<ol>
+<li>
+<a href="#motivation">Why data and parameters come first</a>
+</li>
+<li>
+<a href="#notation">Notation used throughout</a>
+</li>
+<li>
+<a href="#data">Data sourcing</a>
+</li>
+<li>
+<a href="#context">Context length</a>
+</li>
+<li>
+<a href="#tokenizer">Tokenization</a>
+</li>
+<li>
+<a href="#architecture">Architecture and parameter selection</a>
+</li>
+<li>
+<a href="#scaling">Scaling laws</a>
+</li>
+<li>
+<a href="#references">References and licensing</a>
+</li>
+</ol>
+</div>
+<h2 id="motivation">1. Why data and parameters come first</h2>
+<p>Before a model can learn a sentence, we have to decide what counts as a piece of that sentence, how much text the model may look at at once, and how much capacity it has for patterns. These decisions sound like setup, but they define the problem. A model trained on mathematical writing sees a different world from one trained on conversations; a model with a short context may understand every line of a proof yet lose the beginning before reaching the end.</p>
+<p>Parameters are not tiny drawers containing facts. They are adjustable numbers that collectively shape how token patterns are transformed. Choosing one billion of them without choosing their arrangement would be like ordering a million bricks without deciding whether we are building a bridge or a very ambitious garden wall.</p>
+<div class="highlight">The configuration should be derived from data, context, compute, and inference constraints. The final numbers are conclusions, not mysterious constants.</div>
+<h2 id="notation">2. Notation used throughout</h2>
+<p>This section defines notation only. It does not assume a model size or assign numerical values. Section 6 begins with the separate design assumption \(N\approx10^9\), derives the tensor shapes and dimensions, and presents the final configuration only after the derivation.</p>
+<table>
+<tr>
+<th>Symbol</th>
+<th>General definition</th>
+</tr>
+<tr>
+<td>\(N\)</td>
+<td>Total number of trainable scalar parameters.</td>
+</tr>
+<tr>
+<td>\(V\)</td>
+<td>Number of entries in the tokenizer vocabulary.</td>
+</tr>
+<tr>
+<td>\(B\)</td>
+<td>Number of independent token sequences in one global batch.</td>
+</tr>
+<tr>
+<td>\(T\)</td>
+<td>Number of token positions in a sequence or current context.</td>
+</tr>
+<tr>
+<td>\(L\)</td>
+<td>Number of repeated decoder blocks.</td>
+</tr>
+<tr>
+<td>\(D\)</td>
+<td>Hidden dimension of the residual stream.</td>
+</tr>
+<tr>
+<td>\(D_{ff}\)</td>
+<td>Intermediate dimension of the feed-forward network.</td>
+</tr>
+<tr>
+<td>\(h_q,h_{kv}\)</td>
+<td>Query-head and key/value-head counts. Grouped-query attention has \(h_{kv}&lt;h_q\).</td>
+</tr>
+<tr>
+<td>\(d\)</td>
+<td>Dimension per attention head. When queries span the residual width, \(D=h_qd\).</td>
+</tr>
+<tr>
+<td>\(x_t\)</td>
+<td>Token ID at position \(t\), with \(x_t\in\{0,\ldots,V-1\}\).</td>
+</tr>
+<tr>
+<td>\(E\)</td>
+<td>Token-embedding matrix, \(E\in\mathbb{R}^{V\times D}\).</td>
+</tr>
+<tr>
+<td>\(X^{(\ell)}\)</td>
+<td>Hidden states entering block \(\ell\), with \(X^{(\ell)}\in\mathbb{R}^{B\times T\times D}\).</td>
+</tr>
+<tr>
+<td>\(Q,K,V_a\)</td>
+<td>Query, key, and attention-value tensors. \(Q\in\mathbb{R}^{B\times h_q\times T\times d}\), while \(K,V_a\in\mathbb{R}^{B\times h_{kv}\times T\times d}\).</td>
+</tr>
+<tr>
+<td>\(W_Q,W_K,W_V,W_O\)</td>
+<td>Learned query, key, value, and attention-output projection matrices.</td>
+</tr>
+<tr>
+<td>\(M\)</td>
+<td>Causal mask, with \(M_{tu}=0\) for \(u\le t\) and \(M_{tu}=-\infty\) for \(u&gt;t\).</td>
+</tr>
+<tr>
+<td>\(A\)</td>
+<td>Attention probabilities after masked softmax, \(A\in\mathbb{R}^{B\times h_q\times T\times T}\).</td>
+</tr>
+<tr>
+<td>\(W_g,W_u,W_d\)</td>
+<td>SwiGLU gate, up, and down projections, mapping \(D\to D_{ff}\to D\).</td>
+</tr>
+<tr>
+<td>\(z_t\)</td>
+<td>Unnormalized next-token scores, with \(z_t\in\mathbb{R}^{V}\).</td>
+</tr>
+<tr>
+<td>\(p_t\)</td>
+<td>Next-token probabilities, with \(p_t\in[0,1]^V\) and \(\sum_jp_{t,j}=1\).</td>
+</tr>
+<tr>
+<td>\(y_t\)</td>
+<td>Correct next-token target, usually \(y_t=x_{t+1}\).</td>
+</tr>
+<tr>
+<td>\(y\)</td>
+<td>Generated response sequence in fine-tuning objectives; \(y^+\) and \(y^-\) denote preferred and rejected responses.</td>
+</tr>
+<tr>
+<td>\(\mathcal L\)</td>
+<td>Scalar objective averaged over valid target tokens.</td>
+</tr>
+<tr>
+<td>\(\theta\)</td>
+<td>Collection of all trainable parameters; \(\theta\) contains \(N\) scalar values.</td>
+</tr>
+<tr>
+<td>\(\eta_t\)</td>
+<td>Learning rate at optimizer update \(t\).</td>
+</tr>
+<tr>
+<td>\(s\)</td>
+<td>Bytes per stored scalar element. BF16 uses \(s=2\).</td>
+</tr>
+</table>
+<div class="note">The letter \(V\) commonly denotes both vocabulary size and attention values. To avoid that collision, this article uses \(V\) for vocabulary size and \(V_a\) for the attention-value tensor.</div>
+<h3>2.1 Optimization, fine-tuning, and inference symbols</h3>
+<table>
+<tr>
+<th>Symbol</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td>\(N_{\mathrm{valid}}\)</td>
+<td>Unmasked target tokens contributing to a loss.</td>
+</tr>
+<tr>
+<td>\(g_t,m_t,v_t\)</td>
+<td>Gradient and AdamW moment estimates at update \(t\).</td>
+</tr>
+<tr>
+<td>\(\beta_1,\beta_2\)</td>
+<td>AdamW exponential-decay coefficients.</td>
+</tr>
+<tr>
+<td>\(\lambda\)</td>
+<td>Decoupled weight-decay coefficient.</td>
+</tr>
+<tr>
+<td>\(c\)</td>
+<td>Global gradient-clipping threshold.</td>
+</tr>
+<tr>
+<td>\(W\)</td>
+<td>Number of data-parallel workers.</td>
+</tr>
+<tr>
+<td>\(B_{\mu}\)</td>
+<td>Micro-batch size per worker.</td>
+</tr>
+<tr>
+<td>\(a\)</td>
+<td>Gradient-accumulation steps, so \(B=B_{\mu}Wa\).</td>
+</tr>
+<tr>
+<td>\(s_w,s_g,s_m\)</td>
+<td>Bytes per weight, gradient, and optimizer-state scalar.</td>
+</tr>
+<tr>
+<td>\(k\)</td>
+<td>Number of optimizer-state tensors stored per parameter.</td>
+</tr>
+<tr>
+<td>\(M_{\mathrm{train}},M_{\mathrm{act}},M_{\mathrm{workspace}}\)</td>
+<td>Total training memory, saved-activation memory, and temporary kernel-workspace memory.</td>
+</tr>
+<tr>
+<td>\(V_{\mathrm{comm}}\)</td>
+<td>Communication volume transferred by a distributed collective.</td>
+</tr>
+<tr>
+<td>\(n_{\mathrm{grp}}\)</td>
+<td>Completions sampled for one GRPO prompt.</td>
+</tr>
+<tr>
+<td>\(R_i\)</td>
+<td>Verifier reward for completion \(i\).</td>
+</tr>
+<tr>
+<td>\(\mu_R,\sigma_R\)</td>
+<td>Within-group reward mean and standard deviation.</td>
+</tr>
+<tr>
+<td>\(A_i\)</td>
+<td>Group-normalized advantage.</td>
+</tr>
+<tr>
+<td>\(p_\theta,p_{\mathrm{old}},p_{\mathrm{ref}}\)</td>
+<td>Trainable language-model distribution, sampling distribution, and frozen reference distribution.</td>
+</tr>
+<tr>
+<td>\(\rho_{i,t}\)</td>
+<td>Token-level probability ratio between updated and sampling policies.</td>
+</tr>
+<tr>
+<td>\(\epsilon_{\mathrm{clip}}\)</td>
+<td>Policy-ratio clipping radius.</td>
+</tr>
+<tr>
+<td>\(\beta_{\mathrm{DPO}}\)</td>
+<td>DPO preference scale.</td>
+</tr>
+<tr>
+<td>\(D_{\mathrm{KL}}\)</td>
+<td>Kullback-Leibler divergence.</td>
+</tr>
+<tr>
+<td>\(\lambda_{\mathrm{KL}}\)</td>
+<td>Coefficient multiplying the KL-divergence penalty.</td>
+</tr>
+<tr>
+<td>\(T_0,T_q\)</td>
+<td>Initial prompt length and current query length.</td>
+</tr>
+<tr>
+<td>\(G_{\mathrm{dec}}\)</td>
+<td>Newly generated decode tokens.</td>
+</tr>
+<tr>
+<td>\(M_{KV}\)</td>
+<td>Key/value-cache memory.</td>
+</tr>
+<tr>
+<td>\(\varepsilon_{\mathrm{norm}}\)</td>
+<td>Small RMSNorm stability constant.</td>
+</tr>
+<tr>
+<td>\(\varepsilon_{\mathrm{opt}}\)</td>
+<td>Small AdamW denominator constant.</td>
+</tr>
+<tr>
+<td>\(\varepsilon_R\)</td>
+<td>Small GRPO advantage-normalization constant.</td>
+</tr>
+<tr>
+<td>\(\theta_{\mathrm{rope}}\)</td>
+<td>RoPE frequency base; distinct from trainable parameters \(\theta\).</td>
+</tr>
+</table>
+<h3>2.2 Parameter-accounting symbols</h3>
+<table>
+<tr>
+<th>Symbol</th>
+<th>Meaning</th>
+</tr>
+<tr>
+<td>\(N_{\mathrm{embed}}\)</td>
+<td>Parameters in the tied token-embedding matrix.</td>
+</tr>
+<tr>
+<td>\(N_{\mathrm{attn}}\)</td>
+<td>Parameters in one block's query, key, value, and output projections.</td>
+</tr>
+<tr>
+<td>\(N_{\mathrm{ffn}}\)</td>
+<td>Parameters in one block's SwiGLU projections.</td>
+</tr>
+<tr>
+<td>\(N_{\mathrm{block}}\)</td>
+<td>Total parameters in one decoder block, including its two RMSNorm vectors.</td>
+</tr>
+<tr>
+<td>\(N(L)\)</td>
+<td>Total model parameters as a function of integer depth \(L\).</td>
+</tr>
+</table>
+<h2 id="data">3. Data sourcing</h2>
+<p>A model learns statistical regularities from examples, so the corpus is its experience rather than a neutral input file. For mathematical language, we want prose, notation, definitions, derivations, and explanations, not merely isolated equations. OpenWebMath provides that mixture in web-scale mathematical text downloaded as parquet shards and streamed during preparation.</p>
+<p>After the purpose is clear, scale becomes meaningful: 6,315,233 documents contain 48.93 GB of raw text and become 12,540,116,992 tokens, or 1,530,776 full sequences. Compact unsigned 16-bit token IDs occupy about 25.08 GB.</p>
+<h3>3.1 Corpus as a finite empirical distribution</h3>
+<p>Let the cleaned corpus be \(\mathcal C=\{d_i\}_{i=1}^{n}\), with \(n=6{,}315{,}233\). Tokenization maps each document to a finite sequence,</p>
+<p>\[\tau(d_i)=(x_{i,1},\ldots,x_{i,T_i}),\qquad x_{i,t}\in\{0,\ldots,V-1\}.\]</p>
+<p>Training does not optimize an expectation over the unknown distribution of all mathematical writing directly. It minimizes empirical risk over windows sampled from the finite tokenized corpus. If \(w\) denotes one length-\(T\) window and \(\widehat{\mathcal D}\) the sampling distribution induced by sharding, shuffling, and packing, then</p>
+<p>\[\widehat{R}(\theta)=\mathbb E_{w\sim\widehat{\mathcal D}}\left[\frac{1}{T-1}\sum_{t=1}^{T-1}-\log p_\theta(w_{t+1}\mid w_{1:t})\right].\]</p>
+<p>This distinction matters: corpus filtering changes \(\widehat{\mathcal D}\), and therefore changes the function being optimized even when architecture and optimizer remain fixed.</p>
+<h3>3.2 Packing and exact sequence count</h3>
+<p>After tokenization, the corpus contains \(n_{\mathrm{tok}}=12{,}540{,}116{,}992\) token IDs. With fixed windows of \(T=8{,}192\), the exact packed count is</p>
+<p>\[n_{\mathrm{seq}}=\frac{n_{\mathrm{tok}}}{T}=\frac{12{,}540{,}116{,}992}{8{,}192}=1{,}530{,}776.\]</p>
+<p>Because \(V=65{,}536=2^{16}\), every token ID fits exactly in one unsigned 16-bit integer. The payload size is therefore</p>
+<p>\[12{,}540{,}116{,}992\times2=25{,}080{,}233{,}984\text{ bytes}\approx25.08\text{ GB}.\]</p>
+<div class="note">A representative record may alternate a prose definition, an inline identity, a displayed derivation, and a sentence interpreting the result. This describes the texture without reproducing source text.</div>
+<h2 id="context">4. Context length</h2>
+<p>Context length sets the maximum number of tokens that participate in one forward pass. Increasing it preserves longer documents and dependencies, but exact self-attention forms pairwise query-key interactions. Attention computation therefore grows as \(O(T^2D)\), naive score-tensor memory grows as \(O(T^2)\), and KV-cache memory grows linearly as \(O(Lh_{kv}dTs)\).</p>
+<p>For example, we can choose \(T=8{,}192\) to retain long mathematical derivations. A shorter context reduces activation memory, HBM traffic, and attention FLOPs, but increases document splitting and truncation.</p>
+<div class="figure">
+<img src="context_cost.png" alt="Quadratic attention cost and linear KV-cache growth as context increases">
+<p class="caption">Figure 1. Increasing context from 512 to 8,192 multiplies pairwise attention interactions by \(256\), while GQA KV storage grows by \(16\) to 224 MiB.</p>
+</div>
+<h2 id="tokenizer">5. Tokenization</h2>
+<p>Neural networks receive numbers, not words. A tokenizer decides whether “unbelievable” is one unit, several familiar pieces, or a collection of bytes. Whole-word vocabularies fail on unseen words; individual bytes never fail, but produce long sequences. Byte-level BPE starts with universal byte coverage and learns useful merges.</p>
+<p>A standalone byte-level BPE can be trained on 500,000,000 characters. The non-control BPE vocabulary has 65,520 entries, and reserved/control IDs bring \(V\) to 65,536. The table below lists the control IDs used in the article; additional reserved IDs may be kept for compatibility or future formatting.</p>
+<h3>5.1 Formal tokenizer requirements</h3>
+<p>A tokenizer is an encoder-decoder pair \((\tau,\tau^{-1})\). For valid byte strings \(s\), lossless tokenization requires</p>
+<p>\[\tau^{-1}(\tau(s))=s.\]</p>
+<p>Byte-level initialization guarantees representability because every UTF-8 string is a byte sequence and every byte is in the base alphabet. BPE then introduces merges that reduce expected sequence length under the tokenizer-training distribution. If \(|\tau(s)|\) is the encoded length, the compression objective is informally to reduce \(\mathbb E[|\tau(s)|]\) subject to a fixed vocabulary budget and exact decodability.</p>
+<p>The vocabulary-size tradeoff is coupled to the model. A larger \(V\) can shorten sequences, but increases tied embedding parameters by \(D\) for every new token. A smaller \(V\) saves embedding parameters but increases \(T\), attention work, and the number of autoregressive decisions needed to represent the same text.</p>
+<table>
+<tr>
+<th>Token</th>
+<th>ID</th>
+</tr>
+<tr>
+<td>pad / bos / eos / unk</td>
+<td>0 / 1 / 2 / 3</td>
+</tr>
+<tr>
+<td>&lt;|system|&gt;</td>
+<td>65,520</td>
+</tr>
+<tr>
+<td>&lt;|user|&gt;</td>
+<td>65,521</td>
+</tr>
+<tr>
+<td>&lt;|assistant|&gt;</td>
+<td>65,522</td>
+</tr>
+<tr>
+<td>&lt;|end|&gt;</td>
+<td>65,523</td>
+</tr>
+</table>
+<h2 id="architecture">6. Architecture and parameter selection</h2>
+<p>Suppose we first fix the model class: MyLLM should contain approximately one billion trainable parameters. “Approximately” matters because layer count, head count, and matrix dimensions are integers. A practical design band of roughly \(1.0\)–\(1.1\) billion parameters lets us choose hardware-friendly dimensions and then compute the exact total.</p>
+<p>The budget is not divided uniformly. The vocabulary determines a large embedding matrix; every decoder block contains attention and feed-forward projections; depth repeats those block parameters. We therefore choose dimensions in dependency order rather than guessing the completed configuration.</p>
+
+<h3>6.1 Fix the vocabulary and embedding cost</h3>
+<p>The tokenizer establishes \(V=65{,}536\). Once hidden width \(D\) is selected, the input embedding contains</p>
+<p>\[N_{\mathrm{embed}}=VD.\]</p>
+<p>The output language-model head would normally add another \(VD\) parameters. Tying its weight to the input embedding removes that duplicate matrix. For \(D=1{,}792\),</p>
+<p>\[N_{\mathrm{embed}}=65{,}536\times1{,}792=117{,}440{,}512.\]</p>
+<p>Thus the vocabulary alone consumes about 117.4 million parameters before a single decoder block is added. This is one reason vocabulary size and model width cannot be chosen independently of the total budget.</p>
+
+<h3>6.2 Choose head dimension, query heads, and hidden width</h3>
+<p>A common accelerator-friendly head dimension is \(d=128\): it is large enough to provide a useful query/key subspace and aligns cleanly with tensor-core matrix tiles. Hidden width must satisfy</p>
+<p>\[D=h_qd.\]</p>
+<p>Choosing \(h_q=14\) query heads gives</p>
+<p>\[D=14\times128=1{,}792.\]</p>
+<p>Width has a quadratic effect on most projection parameters, so increasing \(D\) is much more expensive than adding a small number of layers. The value 1,792 provides fourteen independent query subspaces while keeping the block cost compatible with the one-billion-parameter band.</p>
+
+<h3>6.3 Choose grouped-query attention</h3>
+<p>Ordinary multi-head attention would use \(h_{kv}=h_q=14\). MyLLM instead chooses \(h_{kv}=2\), so each KV head is shared by seven query heads. The bias-free attention projections contain</p>
+<p>\[N_{\mathrm{attn}}=D(h_qd)+D(h_{kv}d)+D(h_{kv}d)+(h_qd)D.\]</p>
+<p>Because \(h_qd=D\), this becomes</p>
+<p>\[N_{\mathrm{attn}}=2D^2+2Dh_{kv}d=7{,}340{,}032.\]</p>
+<p>GQA reduces both key/value projection parameters and inference KV-cache memory. Relative to fourteen KV heads, two KV heads reduce cache storage by \(14/2=7\) while retaining fourteen query heads.</p>
+
+<h3>6.4 Allocate the feed-forward width</h3>
+<p>A SwiGLU block has gate, up, and down matrices. With no bias terms, its parameter count is</p>
+<p>\[N_{\mathrm{ffn}}=DD_{ff}+DD_{ff}+D_{ff}D=3DD_{ff}.\]</p>
+<p>Choosing \(D_{ff}=4{,}864\) gives</p>
+<p>\[N_{\mathrm{ffn}}=3(1{,}792)(4{,}864)=26{,}148{,}864.\]</p>
+<p>The ratio is \(D_{ff}/D\approx2.714\). SwiGLU uses three matrices, so this width gives substantial nonlinear capacity without paying the parameter cost of applying a conventional \(4D\) intermediate width to all three projections.</p>
+
+<h3>6.5 Compute one decoder block</h3>
+<p>Each pre-normalized block also contains two RMSNorm scale vectors, contributing \(2D=3{,}584\) parameters. Therefore,</p>
+<p>\[\begin{aligned}N_{\mathrm{block}}&=N_{\mathrm{attn}}+N_{\mathrm{ffn}}+2D\\&=7{,}340{,}032+26{,}148{,}864+3{,}584\\&=33{,}492{,}480.\end{aligned}\]</p>
+<p>The feed-forward network accounts for most parameters in each block. Attention is nevertheless the sequence-mixing operation and becomes the dominant context-dependent cost as \(T\) grows.</p>
+
+<h3>6.6 Choose an integer depth</h3>
+<p>After embeddings and the final RMSNorm vector are included, the total is</p>
+<p>\[N(L)=VD+L\,N_{\mathrm{block}}+D.\]</p>
+<p>Nearby integer depths give</p>
+<table>
+<tr>
+<th>Decoder blocks \(L\)</th>
+<th>Exact parameters</th>
+</tr>
+<tr>
+<td>27</td>
+<td>1,021,739,264</td>
+</tr>
+<tr>
+<td>28</td>
+<td>1,055,231,744</td>
+</tr>
+<tr>
+<td>29</td>
+<td>1,088,724,224</td>
+</tr>
+</table>
+<p>All three values belong to the approximate one-billion class. Choosing \(L=28\) places MyLLM near the center of the 1.0–1.1B design band and allocates 937,789,440 parameters to repeated decoder blocks. The exact total follows:</p>
+<p>\[117{,}440{,}512+28(33{,}492{,}480)+1{,}792=1{,}055{,}231{,}744.\]</p>
+
+<h3>6.7 Choose the non-parameterized structural components</h3>
+<p>RoPE introduces position-dependent rotations without a learned position-embedding table. The base \(\theta_{\mathrm{rope}}=500{,}000\) distributes rotation frequencies over the 8,192-token context. RMSNorm uses learned scale vectors already counted above, with \(\varepsilon_{\mathrm{norm}}=10^{-5}\) for numerical stability. Pre-normalization and residual connections support stable signal and gradient propagation across 28 blocks.</p>
+
+<h3>6.8 Final model card</h3>
+<p>The table is now a summary of the preceding constraints and arithmetic rather than a list of unexplained constants.</p>
+<table>
+<tr>
+<th>Model-card field</th>
+<th>MyLLM value</th>
+<th>Reason</th>
+</tr>
+<tr>
+<td>Total parameters</td>
+<td>1,055,231,744</td>
+<td>Falls inside the chosen 1.0–1.1B design band.</td>
+</tr>
+<tr>
+<td>Vocabulary</td>
+<td>65,536</td>
+<td>65,520 non-control byte-BPE entries plus reserved/control IDs.</td>
+</tr>
+<tr>
+<td>Hidden size</td>
+<td>1,792</td>
+<td>Exactly \(14\times128\), matching query-head decomposition.</td>
+</tr>
+<tr>
+<td>Depth</td>
+<td>28 decoder blocks</td>
+<td>Uses 937,789,440 block parameters while remaining near the middle of the target band.</td>
+</tr>
+<tr>
+<td>Attention</td>
+<td>14 query heads; 2 KV heads; head dimension 128</td>
+<td>Fourteen query subspaces with a sevenfold KV-cache reduction relative to fourteen KV heads.</td>
+</tr>
+<tr>
+<td>Feed-forward width</td>
+<td>4,864</td>
+<td>SwiGLU ratio \(D_{ff}/D\approx2.714\) contributes 26,148,864 parameters per block.</td>
+</tr>
+<tr>
+<td>Position</td>
+<td>RoPE; \(\theta_{\mathrm{rope}}=500{,}000\)</td>
+<td>Position-dependent query/key rotations without a learned position table.</td>
+</tr>
+<tr>
+<td>Normalization</td>
+<td>RMSNorm; \(\varepsilon_{\mathrm{norm}}=10^{-5}\)</td>
+<td>Pre-normalized residual blocks with numerically stable scale normalization.</td>
+</tr>
+<tr>
+<td>Embedding tie</td>
+<td>Enabled</td>
+<td>Avoids a second 117,440,512-parameter vocabulary matrix.</td>
+</tr>
+</table>
+<div class="figure">
+<img src="architecture.png" alt="Standard decoder-only Transformer block diagram for MyLLM">
+<p class="caption">Figure 2. The resulting pre-normalized decoder architecture. The 28-block stack alternates grouped-query causal attention and a SwiGLU feed-forward network; the token embedding and language-model head share weights.</p>
+</div>
+<p>Read the figure from top to bottom. Token IDs \(x_{1:T}\) are first converted into residual-stream vectors \(X^{(0)}\) by the embedding lookup \(E[x_{1:T}]\). The embedding matrix is not the first decoder layer; it is the interface from discrete tokens into the continuous hidden space.</p>
+<p>Inside each repeated decoder block, the model uses a pre-normalized residual form. If \(X^{(\ell)}\) is the block input, attention first receives \(\mathrm{RMSNorm}(X^{(\ell)})\), and its output is added back to the original residual stream:</p>
+<p>\[U^{(\ell)}=X^{(\ell)}+\mathrm{Attn}(\mathrm{RMSNorm}(X^{(\ell)})).\]</p>
+<p>The feed-forward network then receives \(\mathrm{RMSNorm}(U^{(\ell)})\), and its output is again added to the residual stream:</p>
+<p>\[X^{(\ell+1)}=U^{(\ell)}+\mathrm{FFN}(\mathrm{RMSNorm}(U^{(\ell)})).\]</p>
+<p>The green arrows therefore mean residual additions. They are sometimes casually called skip connections, but the precise object is the residual stream: a \(D=1{,}792\)-dimensional vector path that carries information through all 28 blocks while each sublayer adds a learned update.</p>
+<p>After the 28th block, a final RMSNorm is applied and the language-model head maps hidden states to vocabulary logits. Weight tying means the same matrix \(E\) used for input embeddings is reused as \(E^\top\) in the output head. This tied head is outside the decoder-block stack; it is not the last decoder layer.</p>
+<h2 id="scaling">7. Scaling laws</h2>
+<p>The compute-optimal analysis of Hoffmann et al. gives a useful rule of thumb of approximately 20 training tokens per parameter <a href="#ref-chinchilla">[2]</a>:</p>
+<p>\[1.055\times10^9\times20\approx21.1\times10^9\text{ tokens}.\]</p>
+<p>Where does the comparison value \(12.5\times10^9\) come from? <a href="https://arxiv.org/abs/2310.06786">OpenWebMath</a> supplies 6,315,233 mathematical web documents <a href="#ref-openwebmath">[1]</a>. After those documents are encoded with MyLLM's byte-level BPE tokenizer, they contain exactly 12,540,116,992 tokens. Token counts are tokenizer-dependent: the OpenWebMath paper reports 14.7B tokens under its own tokenization, while \(12.54\)B is the count that determines the number of MyLLM training sequences and optimizer steps.</p>
+<p>We can therefore compare the available corpus with the scaling-law target:</p>
+<p>\[\frac{12.540\times10^9}{21.105\times10^9}\approx0.594.\]</p>
+<p>The corpus supplies about 59% of the compute-optimal token estimate, so this configuration is undertrained relative to that rule of thumb. A deployment-focused design can instead train beyond the compute-optimal point because additional one-time training may improve the capability of a smaller, less expensive inference model.</p>
+<div class="figure">
+<img src="token_budget.png" alt="Comparison of 12.54 billion tokenizer-derived training tokens and a 21.10 billion Chinchilla estimate">
+<p class="caption">Figure 3. Tokenizing OpenWebMath with MyLLM's tokenizer yields 12.54B tokens, approximately 59% of the 21.10B-token scaling-law reference.</p>
+</div>
+<h2 id="references">8. References and licensing</h2>
+<ul class="refs">
+<li id="ref-openwebmath">
+<strong>[1]</strong> Paster et al. (2023). <a href="https://arxiv.org/abs/2310.06786">OpenWebMath: An Open Dataset of High-Quality Mathematical Web Text</a>, and the <a href="https://huggingface.co/datasets/open-web-math/open-web-math">official dataset card</a>.</li>
+<li>OpenWebMath is distributed under <a href="https://opendatacommons.org/licenses/by/1-0/">ODC-By 1.0</a>. Its dataset card also requires users to follow the <a href="https://commoncrawl.org/terms-of-use/">Common Crawl Terms of Use</a> and notes that licenses of underlying web documents are not altered.</li>
+<li id="ref-chinchilla">
+<strong>[2]</strong> Hoffmann et al. (2022). <a href="https://arxiv.org/abs/2203.15556">Training Compute-Optimal Large Language Models</a>, for the compute-optimal parameter/token analysis.</li>
+<li>Su et al., <a href="https://arxiv.org/abs/2104.09864">RoFormer</a>, for rotary position embeddings.</li>
+<li>Zhang and Sennrich, <a href="https://arxiv.org/abs/1910.07467">Root Mean Square Layer Normalization</a>, for RMSNorm.</li>
+<li>Shazeer, <a href="https://arxiv.org/abs/2002.05202">GLU Variants Improve Transformer</a>, for SwiGLU.</li>
+<li>Ainslie et al., <a href="https://arxiv.org/abs/2305.13245">GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints</a>, for grouped-query attention.</li>
+</ul>
+<div class="warning">The corpus license does not grant ownership of source webpages. Any redistribution or derivative release must preserve required attribution and account for source-level rights and applicable terms.</div>
+<footer>&copy; 2026. All rights reserved.</footer>
+</body>
+</html>

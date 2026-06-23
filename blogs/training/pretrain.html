@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pretraining: MyLLM</title>
+<script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6">
+</script>
+<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+</script>
+<style>body{font-family:Arial,sans-serif;line-height:1.62;max-width:1080px;margin:0 auto;padding:22px;color:#111}h1,h2,h3{line-height:1.25}h1{margin-bottom:18px}a{color:#0645ad;text-decoration:none}a:hover{text-decoration:underline}.toc{background:#f8f9fb;border:1px solid #ddd;padding:14px 18px;margin:18px 0}.toc ol{margin-bottom:0}table{border-collapse:collapse;width:100%;margin:18px 0;font-size:.94em}th,td{border:1px solid #ccc;padding:8px;vertical-align:top}th{background-color:#f2f2f2}.note{background:#fff8dc;border-left:4px solid #d6a600;padding:10px;margin:12px 0}.highlight{background:#f0fff4;border-left:4px solid #38a169;padding:10px;margin:12px 0}.warning{background:#fff5f5;border-left:4px solid #e53e3e;padding:10px;margin:12px 0}.refs li{margin-bottom:10px}footer{text-align:center;margin-top:30px;font-size:.9em;color:#555}.nav{overflow-wrap:anywhere}.figure{text-align:center;margin:24px 0}.figure img{display:block;width:100%;max-width:900px;height:auto;margin:0 auto}.caption{font-size:.9em;color:#555;margin-top:8px}</style>
+</head>
+<body>
+<h1>Pretraining MyLLM</h1>
+<p class="nav">
+<a href="../train_index.html">Index</a> · <a href="data_prepare_params.html">Data &amp; Parameters</a> · <a href="train.html">Training</a> · <a href="pretrain.html">Pretraining</a> · <a href="fine_tuning.html">Fine-tuning</a> · <a href="inference.html">Inference</a>
+</p>
+<div class="highlight" id="brief-summary"><strong>In brief</strong><ul><li>Eight GPU replicas use DDP, each processing 4 sequences, for a global batch of 32 and 262,144 tokens per optimizer step.</li><li>The 47,837-step budget corresponds to 12,540,182,528 sampled token draws and about 15.9 hours of wall time.</li><li>Steady throughput is approximately 218.7k tokens/s, with peak allocated memory near 103.5 GiB per GPU.</li><li>Cross-entropy falls from 11.47 near random initialization to approximately 2.0 to 2.08.</li></ul></div>
+<div class="toc">
+<strong>Table of contents</strong>
+<ol>
+<li>
+<a href="#motivation">Why pretraining is the expensive foundation</a>
+</li>
+<li>
+<a href="#setup">Setup</a>
+</li>
+<li>
+<a href="#parallel">GPU parallelism</a>
+</li>
+<li>
+<a href="#batch">Batch size</a>
+</li>
+<li>
+<a href="#budget">Epoch and token budget</a>
+</li>
+<li>
+<a href="#convergence">Convergence</a>
+</li>
+<li>
+<a href="#references">References and licensing</a>
+</li>
+</ol>
+</div>
+<h2 id="motivation">1. Why pretraining is the expensive foundation</h2>
+<p>The equations in the Training chapter describe one optimizer update. Pretraining performs that update tens of thousands of times over billions of tokens. This is where a model acquires broad statistical representations of language and subject matter, and where sequence length, activation storage, optimizer state, and communication collectives become concrete systems constraints.</p>
+<p>The central problem is efficient distributed execution: maintain high GPU utilization, prevent input-pipeline stalls, partition examples across workers, synchronize gradients, and preserve numerical stability. Throughput, memory allocation, gradient norm, learning rate, and loss are operational diagnostics. Together they reveal whether accelerator compute, HBM capacity, interconnect communication, or optimization behavior is limiting progress.</p>
+<h2 id="setup">2. Pretraining setup</h2>
+<p>Once those constraints are explicit, we can choose the execution configuration. For example, MyLLM can be pretrained on 8 GPUs with an 8,192-token context, micro-batches of 4 sequences per GPU, no gradient accumulation, and data-parallel training.</p>
+<h3>2.1 State and memory decomposition</h3>
+<p>Let \(N\) be the number of trainable parameters and \(s_w,s_g,s_m\) the bytes per weight, gradient, and optimizer-state scalar. A first-order per-replica memory model is</p>
+<p>\[M_{\mathrm{train}}\approx Ns_w+Ns_g+kNs_m+M_{\mathrm{act}}(B_{\mu},T,L,D)+M_{\mathrm{workspace}},\]</p>
+<p>where \(k\) counts optimizer-state tensors. With BF16 weights alone, MyLLM requires</p>
+<p>\[1{,}055{,}231{,}744\times2\approx2.11\text{ GB}.\]</p>
+<p>Weights are therefore not the dominant explanation for the observed 103.5 GiB peak. Long-context activations, gradients, optimizer moments, temporary attention buffers, and kernel workspaces dominate the gap.</p>
+<h2 id="parallel">3. GPU parallelism</h2>
+<p>Distributed data parallelism keeps one complete model replica on each GPU. Replicas read different samples, compute local gradients, and all-reduce those gradients before making identical updates. Tensor parallelism splits individual matrix operations; pipeline parallelism splits layers into stages. Because the 1.055B-parameter model fits within the per-GPU HBM budget, DDP is the simpler fit.</p>
+<h3>3.1 Equivalence to a global-batch gradient</h3>
+<p>Let worker \(r\in\{1,\ldots,W\}\) process local batch \(\mathcal B_r\) of size \(B_{\mu}\). Its local gradient is</p>
+<p>\[g_r=\frac{1}{B_{\mu}}\sum_{x\in\mathcal B_r}\nabla_\theta\ell(x;\theta).\]</p>
+<p>An all-reduce average gives</p>
+<p>\[\bar g=\frac{1}{W}\sum_{r=1}^{W}g_r=\frac{1}{WB_{\mu}}\sum_{r=1}^{W}\sum_{x\in\mathcal B_r}\nabla_\theta\ell(x;\theta),\]</p>
+<p>which is exactly the gradient of the union of equally sized local batches. Each replica applies the same optimizer update and therefore remains synchronized up to numerical nondeterminism.</p>
+<h3>3.2 Communication model</h3>
+<p>A ring all-reduce moves approximately</p>
+<p>\[V_{\mathrm{comm}}\approx2\frac{W-1}{W}Ns_g\]</p>
+<p>bytes per worker for one dense gradient tensor. With \(W=8\), \(N=1.055\)B, and two-byte communicated gradients, this is approximately 3.69 GB per worker per update. Exposed latency depends on interconnect bandwidth and how much collective communication overlaps backward computation.</p>
+<h2 id="batch">4. Choosing batch size</h2>
+<p>The global batch is \(4\times8=32\) sequences, so</p>
+<p>\[32\times8{,}192=262{,}144\text{ tokens per step}.\]</p>
+<p>Larger batches reduce gradient noise and can support a larger learning rate, but activation memory constrains them. Peak allocation reached about 103.5 GiB per GPU.</p>
+<p>In general, with micro-batch \(B_{\mu}\), worker count \(W\), and gradient accumulation \(a\),</p>
+<p>\[B=B_{\mu}Wa,\qquad n_{\mathrm{step}}=BT.\]</p>
+<p>Substitution gives \(B=4\cdot8\cdot1=32\) and \(n_{\mathrm{step}}=262{,}144\). Increasing \(B\) reduces stochastic-gradient variance when examples are weakly correlated, but eventually yields diminishing statistical efficiency. The systems optimum and statistical optimum need not coincide.</p>
+<h2 id="budget">5. Epoch and token budget</h2>
+<table>
+<tr>
+<th>Measurement</th>
+<th>Example value</th>
+</tr>
+<tr>
+<td>Steps</td>
+<td>47,837</td>
+</tr>
+<tr>
+<td>Last periodic token counter</td>
+<td>12,538,347,520 at logged step 47,830</td>
+</tr>
+<tr>
+<td>Nominal optimizer-step tokens</td>
+<td>12,540,182,528 across 47,837 full sampled batches</td>
+</tr>
+<tr>
+<td>Wall time</td>
+<td>57,232 seconds, about 15.9 hours</td>
+</tr>
+<tr>
+<td>Throughput</td>
+<td>about 218,712 tokens per second</td>
+</tr>
+</table>
+<div class="figure">
+<img src="schedule_throughput.png" alt="Learning-rate schedule and token-throughput plots">
+<p class="caption">Figure 1. Cosine learning-rate decay and throughput across the 47,837-step example.</p>
+</div>
+<div class="figure">
+<img src="grad_tokens.png" alt="Gradient norm and cumulative-token plots">
+<p class="caption">Figure 2. Gradient behavior and the nearly linear accumulation of 12.54B training tokens.</p>
+</div>
+<h3>5.1 Budget consistency</h3>
+<p>The sampler draws packed sequences independently with replacement. Consequently, “one epoch” denotes the conventional step budget</p>
+<p>\[t_{\max}=\left\lceil\frac{1{,}530{,}776}{32}\right\rceil=47{,}837,\]</p>
+<p>not a permutation that visits each sequence exactly once. Every optimizer step uses a full batch, so the nominal number of token draws is</p>
+<p>\[47{,}837\times262{,}144=12{,}540{,}182{,}528.\]</p>
+<p>This exceeds the unique packed-corpus token count by 65,536, only one quarter of a global batch. The progress logger emits every ten steps; therefore, its last token counter appears at step 47,830:</p>
+<p>\[47{,}830\times262{,}144=12{,}538{,}347{,}520.\]</p>
+<p>The average throughput implied by all optimizer-step token draws and wall time is</p>
+<p>\[\frac{12{,}540{,}182{,}528}{57{,}232.37}\approx219{,}110\text{ tokens/s},\]</p>
+<p>consistent with approximately 218.7k tokens/s periodic measurements once step-time variation, checkpointing, and logging cadence are considered.</p>
+<h2 id="convergence">6. Convergence</h2>
+<p>In this example, first-step loss is about 11.47, close to the random-uniform reference \(\ln(65{,}536)\approx11.09\), and the final region is approximately 2.0–2.08. A cosine schedule can warm from \(3\times10^{-7}\) to a peak near \(1.47\times10^{-4}\), then decay to \(3.0\times10^{-5}\). Flattening means each additional token yields a smaller loss reduction; it does not prove that the model has exhausted useful learning.</p>
+<div class="figure">
+<img src="loss.png" alt="MyLLM pretraining loss over 47,837 steps with a zoomed convergence panel">
+<p class="caption">Figure 3. Global and zoomed views make both the initial loss collapse and later convergence visible; the dark trace is the 100-step mean.</p>
+</div>
+<h3>6.1 Exact schedule form</h3>
+<p>Let \(t_w\) be the warmup length, \(t_{\max}\) the final update, \(\eta_{\max}\) the peak rate, and \(\eta_{\min}\) the terminal rate. A linear-warmup cosine schedule is</p>
+<p>\[\eta_t=\begin{cases}\eta_{\max}t/t_w,&0\le t\le t_w,\\\eta_{\min}+\frac{1}{2}(\eta_{\max}-\eta_{\min})\left[1+\cos\!\left(\pi\frac{t-t_w}{t_{\max}-t_w}\right)\right],&t_w&lt;t\le t_{\max}.\end{cases}\]</p>
+<p>Warmup controls early update magnitude while optimizer moments are poorly calibrated. Cosine decay reduces stochastic motion later without an abrupt discontinuity in \(\eta_t\).</p>
+<h3>6.2 Interpreting loss correctly</h3>
+<p>A uniform distribution over \(V\) tokens has cross-entropy \(\log V\). For \(V=65{,}536\), \(\log V=16\log2\approx11.09\). The step-one value 11.47 is consistent with near-random predictions plus finite-batch and initialization effects. A final loss near 2.08 corresponds to perplexity \(e^{2.08}\approx8.0\). Perplexity is the exponential of average log loss, not a literal support size.</p>
+<h2 id="references">7. References and licensing</h2>
+<ul class="refs">
+<li>
+<a href="https://pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html">PyTorch DistributedDataParallel documentation</a>, for replicated-model gradient synchronization.</li>
+<li>Loshchilov and Hutter, <a href="https://arxiv.org/abs/1711.05101">Decoupled Weight Decay Regularization</a>, for AdamW.</li>
+</ul>
+<div class="note">The plots are original visualizations derived from the article's training log. PyTorch documentation remains subject to its publisher's terms; no third-party figure is reproduced.</div>
+<footer>&copy; 2026. All rights reserved.</footer>
+</body>
+</html>

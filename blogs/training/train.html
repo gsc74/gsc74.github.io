@@ -1,0 +1,141 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Training: MyLLM</title><script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script><script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script><style>body{font-family:Arial,sans-serif;line-height:1.62;max-width:1080px;margin:0 auto;padding:22px;color:#111}h1,h2,h3{line-height:1.25}h1{margin-bottom:18px}a{color:#0645ad;text-decoration:none}a:hover{text-decoration:underline}.toc{background:#f8f9fb;border:1px solid #ddd;padding:14px 18px;margin:18px 0}.toc ol{margin-bottom:0}table{border-collapse:collapse;width:100%;margin:18px 0;font-size:.94em}th,td{border:1px solid #ccc;padding:8px;vertical-align:top}th{background-color:#f2f2f2}.note{background:#fff8dc;border-left:4px solid #d6a600;padding:10px;margin:12px 0}.highlight{background:#f0fff4;border-left:4px solid #38a169;padding:10px;margin:12px 0}.warning{background:#fff5f5;border-left:4px solid #e53e3e;padding:10px;margin:12px 0}.refs li{margin-bottom:10px}footer{text-align:center;margin-top:30px;font-size:.9em;color:#555}.nav{overflow-wrap:anywhere}</style></head><body>
+<h1>Training</h1>
+<p class="nav"><a href="../train_index.html">Index</a> · <a href="data_prepare_params.html">Data &amp; Parameters</a> · <a href="train.html">Training</a> · <a href="pretrain.html">Pretraining</a> · <a href="fine_tuning.html">Fine-tuning</a> · <a href="inference.html">Inference</a></p>
+<div class="highlight" id="brief-summary"><strong>In brief</strong><ul><li>Token IDs index learned vectors; 28 pre-normalized decoder blocks transform them with GQA, RoPE, residual connections, and SwiGLU.</li><li>The tied language-model head produces 65,536 logits at every position.</li><li>Cross-entropy is used because next-token prediction is categorical maximum likelihood and its excess population risk is exactly a KL divergence.</li><li>Backpropagation computes \(\nabla_\theta\mathcal L\); gradient clipping and AdamW convert it into a controlled parameter update.</li></ul></div>
+<div class="toc"><strong>Table of contents</strong><ol><li><a href="#motivation">How does a model learn anything?</a></li><li><a href="#objective">The next-token objective</a></li><li><a href="#embedding">From token IDs to vectors</a></li><li><a href="#block">Inside one Transformer block</a></li><li><a href="#head">From hidden states to predictions</a></li><li><a href="#loss">Cross-entropy and its alternatives</a></li><li><a href="#backward">Backward pass and optimization</a></li><li><a href="#flow">The complete training step</a></li><li><a href="#references">References and licensing</a></li></ol></div>
+
+<h2 id="motivation">1. How does a model learn anything?</h2>
+<p>A fresh language model is not a sleepy encyclopedia waiting to be awakened. Its parameters begin as mostly random numbers. If we ask it to complete “The capital of France is,” it has no special reason to prefer “Paris” over “potato.” Training creates that reason.</p>
+<p>The basic game is wonderfully repetitive: hide the next token, ask the model to predict it, measure how wrong the prediction was, and make a tiny correction. Repeat this across billions of tokens. The surprising part is that one simple game teaches grammar, style, facts, mathematical patterns, and some forms of reasoning because all of them help predict what comes next.</p>
+<p>This chapter follows one sequence through that game. All symbols and dimensions are defined in <a href="data_prepare_params.html#notation">the notation table</a>. We begin with discrete token IDs, transform them through embeddings, attention, and feed-forward networks, produce a probability for every possible next token, and finally send the error backward.</p>
+
+<h2 id="objective">2. The next-token objective</h2>
+<h3>2.1 One sequence becomes many questions</h3>
+<p>For tokens \(x_1,\ldots,x_T\), position \(t\) receives the prefix \(x_{1:t}\) and predicts \(y_t=x_{t+1}\). One sequence therefore supplies roughly \(T-1\) training examples without creating separate input files.</p>
+<p>The probability of the complete sequence is factorized by the chain rule:</p>
+<p>\[p_\theta(x_{1:T})=\prod_{t=1}^{T}p_\theta(x_t\mid x_{&lt;t}).\]</p>
+<p>The subscript \(\theta\) reminds us that every probability depends on the trainable parameters. Causal masking enforces the rules of the game: position \(t\) may read positions \(1,\ldots,t\), but it may not peek at future answers.</p>
+<h3>2.2 Why predict the next token?</h3>
+<p>Next-token prediction needs no hand-written labels; the text labels itself by shifting one position. It also matches generation at inference time, when the model repeatedly predicts one continuation token. The objective is not the only imaginable way to learn language, but it is scalable, dense in supervision, and aligned with autoregressive use.</p>
+
+<h2 id="embedding">3. From token IDs to vectors</h2>
+<h3>3.1 Embedding lookup</h3>
+<p>A token ID is merely an integer label. ID 42 is not numerically “twice as meaningful” as ID 21. The embedding matrix \(E\in\mathbb{R}^{V\times D}\) gives each ID a learned vector:</p>
+<p>\[X^{(0)}_{b,t,:}=E[x_{b,t}],\qquad X^{(0)}\in\mathbb{R}^{B\times T\times D}.\]</p>
+<p>For MyLLM, \(V=65{,}536\) and \(D=1{,}792\). Tokens that become useful in similar contexts can acquire related vectors, but this geometry is learned rather than built into the IDs.</p>
+<h3>3.2 Where does position enter?</h3>
+<p>A bag of token vectors has no order. MyLLM uses rotary position embeddings inside attention rather than adding a separate position vector to \(X^{(0)}\). RoPE rotates pairs of query and key coordinates by position-dependent angles, allowing their dot product to reflect relative displacement.</p>
+
+<h2 id="block">4. Inside one Transformer block</h2>
+<p>Each of the \(L=28\) blocks contains two major transformations: causal self-attention performs content-dependent aggregation across token positions, and a SwiGLU feed-forward network transforms each position independently. Residual connections provide identity paths around both sublayers, preserving representations and improving gradient propagation through depth.</p>
+
+<h3>4.1 RMSNorm: control scale before transformation</h3>
+<p>For a hidden vector \(x\in\mathbb{R}^{D}\), RMSNorm computes</p>
+<p>\[\operatorname{RMSNorm}(x)=g\odot\frac{x}{\sqrt{D^{-1}\sum_{i=1}^{D}x_i^2+\varepsilon_{\mathrm{norm}}}},\]</p>
+<p>where \(g\in\mathbb{R}^{D}\) is learned and \(\varepsilon_{\mathrm{norm}}=10^{-5}\) prevents division by an extremely small value. Normalization keeps activation scale predictable. It is applied before each sublayer, so the residual stream itself retains a direct path through the network.</p>
+
+<h3>4.2 Queries, keys, and values</h3>
+<p>Let \(U=\operatorname{RMSNorm}(X^{(\ell)})\). Learned projections create three views:</p>
+<p>\[Q=UW_Q,\qquad K=UW_K,\qquad V_a=UW_V.\]</p>
+<p>A query describes what the current position is looking for. A key describes what a source position offers for matching. A value contains the information copied when that source is selected. MyLLM has \(h_q=14\) query heads but only \(h_{kv}=2\) key/value heads, each of width \(d=128\).</p>
+<p>The projection matrices and reshaped tensor dimensions are</p>
+<p>\[\begin{aligned}W_Q&\in\mathbb{R}^{D\times h_qd},&Q&\in\mathbb{R}^{B\times h_q\times T\times d},\\W_K,W_V&\in\mathbb{R}^{D\times h_{kv}d},&K,V_a&\in\mathbb{R}^{B\times h_{kv}\times T\times d}.\end{aligned}\]</p>
+<p>For GQA, define group size \(g=h_q/h_{kv}\) and the KV-head assignment \(\kappa(i)=\lfloor i/g\rfloor\) for query head \(i\in\{0,\ldots,h_q-1\}\). MyLLM has \(g=7\), so query head \(i\) attends using \(K_{\kappa(i)}\) and \((V_a)_{\kappa(i)}\). This mapping makes the sharing rule explicit rather than treating GQA as an implementation detail.</p>
+
+<h3>4.3 Rotary position embeddings</h3>
+<p>For one coordinate pair, RoPE applies a rotation \(R_t\) at position \(t\):</p>
+<p>\[\widetilde q_t=R_tq_t,\qquad \widetilde k_t=R_tk_t.\]</p>
+<p>Because rotations compose by relative angle, \(\widetilde q_t^\top\widetilde k_u\) depends naturally on \(t-u\). The base \(\theta_{\mathrm{rope}}=500{,}000\) controls the range of rotation frequencies; it is unrelated to the parameter collection \(\theta\).</p>
+<p>More precisely, for coordinate-pair index \(j\in\{0,\ldots,d/2-1\}\), define angular frequency</p>
+<p>\[\omega_j=\theta_{\mathrm{rope}}^{-2j/d}.\]</p>
+<p>The two-dimensional rotation at position \(t\) is</p>
+<p>\[R_{t,j}=\begin{bmatrix}\cos(t\omega_j)&-\sin(t\omega_j)\\\sin(t\omega_j)&\cos(t\omega_j)\end{bmatrix},\qquad R_t=\operatorname{diag}(R_{t,0},\ldots,R_{t,d/2-1}).\]</p>
+<p>Orthogonality and the group law imply \(R_t^\top R_u=R_{u-t}\), hence</p>
+<p>\[(R_tq_t)^\top(R_uk_u)=q_t^\top R_{u-t}k_u.\]</p>
+<p>The attention score can therefore encode relative displacement without a learned absolute-position table.</p>
+
+<h3>4.4 Scaled causal attention</h3>
+<p>For one query head, the score from target \(t\) to source \(u\) is</p>
+<p>\[S_{t,u}=\frac{\widetilde q_t^\top\widetilde k_u}{\sqrt d}+M_{t,u},\qquad M_{t,u}=\begin{cases}0,&u\le t,\\-\infty,&u>t.\end{cases}\]</p>
+<p>Division by \(\sqrt d\) prevents dot products from growing excessively with head width. Softmax converts allowed scores into nonnegative weights that sum to one:</p>
+<p>\[A_{t,u}=\frac{e^{S_{t,u}}}{\sum_{j\le t}e^{S_{t,j}}},\qquad O_t=\sum_{u\le t}A_{t,u}(V_a)_u.\]</p>
+<p>In matrix form across heads:</p>
+<p>\[O=\operatorname{softmax}\!\left(\frac{\widetilde Q\widetilde K^\top}{\sqrt d}+M\right)V_a.\]</p>
+<p>Grouped-query attention shares each KV head among seven query heads. The queries can ask fourteen different kinds of question while the stored keys and values occupy only \(2/14\) of the head count required by ordinary multi-head attention.</p>
+
+<h3>4.5 Output projection and first residual connection</h3>
+<p>The head outputs are concatenated and projected back to \(D\) dimensions:</p>
+<p>\[H=X^{(\ell)}+\operatorname{Concat}(O_1,\ldots,O_{h_q})W_O.\]</p>
+<p>The addition is more than convenient bookkeeping. It lets a block learn a correction to the current representation instead of rebuilding that representation from scratch.</p>
+
+<h3>4.6 SwiGLU feed-forward network</h3>
+<p>Attention mixes positions; the feed-forward network performs a richer nonlinear computation separately at every position. With \(R=\operatorname{RMSNorm}(H)\), MyLLM computes</p>
+<p>\[F=\bigl(\operatorname{SiLU}(RW_g)\odot(RW_u)\bigr)W_d,\]</p>
+<p>where \(W_g,W_u\in\mathbb{R}^{D\times D_{ff}}\), \(W_d\in\mathbb{R}^{D_{ff}\times D}\), and</p>
+<p>\[\operatorname{SiLU}(a)=a\,\sigma(a).\]</p>
+<p>One branch proposes features and the other gates them. The block output is the second residual addition:</p>
+<p>\[X^{(\ell+1)}=H+F.\]</p>
+
+<h3>4.7 Per-block computational complexity</h3>
+<p>Ignoring constants associated with fused kernels, the dense projections in one block require</p>
+<p>\[C_{\mathrm{proj}}=O\!\left(BT\left(2D^2+2Dh_{kv}d\right)\right),\]</p>
+<p>the score and value-aggregation operations require</p>
+<p>\[C_{\mathrm{attn}}=O(Bh_qT^2d),\]</p>
+<p>and SwiGLU requires</p>
+<p>\[C_{\mathrm{ffn}}=O(3BTDD_{ff}).\]</p>
+<p>Thus projection and feed-forward work scale linearly in \(T\), while exact attention scales quadratically. A naive implementation materializes score and probability tensors of shape \(B\times h_q\times T\times T\). For \(B=1\), \(h_q=14\), \(T=8{,}192\), and BF16 storage, one such tensor occupies</p>
+<p>\[14(8{,}192)^2(2)=1{,}879{,}048{,}192\text{ bytes}\approx1.75\text{ GiB}.\]</p>
+<p>Materializing both scores and probabilities would require approximately 3.5 GiB per layer. Tiled exact-attention kernels avoid storing both full tensors in HBM, reducing memory traffic and activation storage without changing the mathematical operator.</p>
+
+<h2 id="head">5. From hidden states to predictions</h2>
+<p>After 28 blocks, final RMSNorm produces \(\widehat X\). The language-model head maps each hidden vector to one score per vocabulary token:</p>
+<p>\[z_t=E\widehat x_t\in\mathbb{R}^{V}.\]</p>
+<p>The same matrix \(E\) used for input embeddings is reused here; equivalently, row-vector notation uses \(\widehat x_tE^\top\). Tying avoids a second \(V\times D\) matrix and places input and output token representations in the same learned geometry.</p>
+<p>Logits are unrestricted scores, not probabilities. Softmax normalizes them:</p>
+<p>\[p_{t,j}=\frac{e^{z_{t,j}}}{\sum_{k=1}^{V}e^{z_{t,k}}}.\]</p>
+
+<h2 id="loss">6. Cross-entropy and its alternatives</h2>
+<h3>6.1 The loss</h3>
+<p>If \(y_t\) is the correct next token, its negative log-likelihood is</p>
+<p>\[\ell_t=-\log p_{t,y_t}.\]</p>
+<p>For a batch mask \(m_{b,t}\in\{0,1\}\), where zero marks padding or an intentionally excluded target, the exact empirical objective is</p>
+<p>\[\mathcal L(\theta)=-\frac{1}{N_{\mathrm{valid}}}\sum_{b=1}^{B}\sum_{t=1}^{T-1}m_{b,t}\log p_\theta(x_{b,t+1}\mid x_{b,1:t}),\qquad N_{\mathrm{valid}}=\sum_{b,t}m_{b,t}.\]</p>
+<p>Padding and masked prompt positions are excluded from the valid-token count. Perplexity is \(\operatorname{PPL}=e^{\mathcal L}\); it can be read loosely as the model's effective number of plausible choices at each step.</p>
+
+<h3>6.2 Why cross-entropy fits language modeling</h3>
+<p>The next token is a categorical outcome among \(V\) possibilities. Cross-entropy is exactly the negative log-likelihood of that categorical model, so minimizing it is maximum-likelihood estimation. It rewards assigning probability to the observed token, penalizes confident mistakes strongly, and is a proper scoring rule: in expectation, the best report is the model's true belief distribution.</p>
+<p>The proper-scoring statement has an exact decomposition. If the true conditional next-token distribution is \(q\) and the model reports \(p\), then expected cross-entropy satisfies</p>
+<p>\[\mathbb E_{Y\sim q}[-\log p_Y]=H(q)+D_{\mathrm{KL}}(q\Vert p)\ge H(q),\]</p>
+<p>with equality if and only if \(p=q\) on the support of \(q\). The nonnegative KL term is the excess risk caused by reporting the wrong distribution.</p>
+<p>Its gradient is unusually clean:</p>
+<p>\[\frac{\partial\ell_t}{\partial z_{t,j}}=p_{t,j}-\mathbf 1[j=y_t].\]</p>
+<p>The correct logit is pushed upward in proportion to how much probability it lacks; every incorrect logit is pushed downward in proportion to the probability it received.</p>
+<p>The Hessian with respect to logits is</p>
+<p>\[\nabla_z^2\ell=\operatorname{diag}(p)-pp^\top\succeq0.\]</p>
+<p>Cross-entropy is therefore convex in the logits, although the complete neural-network objective remains nonconvex in \(\theta\).</p>
+
+<h3>6.3 Why not use a different loss?</h3>
+<table><tr><th>Candidate</th><th>Why it is not the default next-token objective</th></tr><tr><td>Zero-one accuracy</td><td>It changes only when the top-ranked token changes. Almost everywhere its gradient is zero, so it supplies no useful direction for small parameter updates.</td></tr><tr><td>Mean-squared error on token IDs</td><td>Token IDs are arbitrary labels. Predicting ID 100 when the answer is ID 101 is not inherently better than predicting ID 50; numerical distance between IDs has no linguistic meaning.</td></tr><tr><td>Mean-squared error on one-hot vectors</td><td>It can train a classifier, but it does not arise as the categorical log-likelihood and often gives less useful gradients when softmax probabilities become very wrong or confident.</td></tr><tr><td>Hinge loss</td><td>It emphasizes a margin between the correct class and competitors but does not directly train calibrated probabilities, which generation needs for sampling.</td></tr><tr><td>Contrastive loss</td><td>It is valuable for representation learning and ranking, but standard next-token training has an explicit correct class and needs a normalized distribution over the complete vocabulary.</td></tr></table>
+<div class="figure" style="text-align:center;margin:24px 0"><img src="cross_entropy.png" alt="Cross-entropy penalty and logit-gradient curves" style="display:block;width:100%;max-width:900px;height:auto;margin:0 auto"><p style="font-size:.9em;color:#555">Figure 1. Cross-entropy strongly penalizes low probability on the correct token, while the logit gradient is predicted probability minus target indicator.</p></div>
+
+<h2 id="backward">7. Backward pass and optimization</h2>
+<h3>7.1 Backpropagation</h3>
+<p>The logit gradient flows backward through the tied head, final normalization, every residual branch, feed-forward projection, attention projection, and embedding lookup. The chain rule accumulates the contribution of every token that used a parameter:</p>
+<p>\[g_t=\nabla_\theta\mathcal L_t.\]</p>
+<p>Residual connections create short gradient routes, while pre-normalization keeps activation and gradient scales more stable across depth.</p>
+<h3>7.2 AdamW</h3>
+<p>AdamW maintains exponential moving averages of the gradient and squared gradient:</p>
+<p>\[m_t=\beta_1m_{t-1}+(1-\beta_1)g_t,\qquad v_t=\beta_2v_{t-1}+(1-\beta_2)g_t^2.\]</p>
+<p>After bias correction, the update is approximately</p>
+<p>\[\theta_{t+1}=\theta_t-\eta_t\frac{\widehat m_t}{\sqrt{\widehat v_t}+\varepsilon_{\mathrm{opt}}}-\eta_t\lambda\theta_t.\]</p>
+<p>The adaptive denominator reduces updates in coordinates with persistently large gradients. Decoupled weight decay \(\lambda\) gently discourages parameter growth without being mixed into the adaptive gradient calculation.</p>
+<h3>7.3 Gradient clipping and the learning rate</h3>
+<p>If the global gradient norm exceeds threshold \(c\), clipping rescales it:</p>
+<p>\[g\leftarrow g\min\!\left(1,\frac{c}{\lVert g\rVert_2}\right).\]</p>
+<p>Gradient clipping bounds exceptional gradient norms, but it does not replace learning-rate control. The learning rate \(\eta_t\) remains the principal scale factor for parameter updates; warmup avoids large early updates before the optimizer's moment estimates are reliable, and later decay supports smaller corrections near convergence.</p>
+
+<h2 id="flow">8. The complete training step</h2>
+<table><tr><th>Stage</th><th>Input</th><th>Output</th><th>Purpose</th></tr><tr><td>Embedding</td><td>Token IDs \(x\)</td><td>\(X^{(0)}\in\mathbb{R}^{B\times T\times D}\)</td><td>Replace arbitrary IDs with learned vectors.</td></tr><tr><td>28 decoder blocks</td><td>Hidden states</td><td>Contextual hidden states</td><td>Use attention to mix positions and SwiGLU to transform features.</td></tr><tr><td>Final norm and tied head</td><td>\(X^{(L)}\)</td><td>Logits \(z\in\mathbb{R}^{B\times T\times V}\)</td><td>Score every possible next token.</td></tr><tr><td>Softmax and cross-entropy</td><td>Logits and targets</td><td>Scalar \(\mathcal L\)</td><td>Measure categorical predictive error.</td></tr><tr><td>Backpropagation</td><td>\(\mathcal L\)</td><td>\(\nabla_\theta\mathcal L\)</td><td>Assign responsibility to every parameter.</td></tr><tr><td>AdamW update</td><td>Gradients and optimizer state</td><td>New parameters</td><td>Take one controlled step toward lower expected loss.</td></tr></table>
+<div class="highlight">Training is one closed loop: represent, communicate, transform, predict, measure, correct. Scale makes the loop expensive; the equations make it explainable.</div>
+
+<h2 id="references">9. References and licensing</h2><ul class="refs"><li>Vaswani et al., <a href="https://arxiv.org/abs/1706.03762">Attention Is All You Need</a>, for scaled dot-product attention and the Transformer.</li><li>Loshchilov and Hutter, <a href="https://arxiv.org/abs/1711.05101">Decoupled Weight Decay Regularization</a>, for AdamW.</li><li>RoPE, RMSNorm, SwiGLU, and GQA are cited with their primary papers in <a href="data_prepare_params.html#references">Data &amp; Parameters</a>.</li></ul><div class="note">The equations and explanatory figure are original article material. Cited works retain their publication rights.</div><footer>&copy; 2026. All rights reserved.</footer></body></html>
