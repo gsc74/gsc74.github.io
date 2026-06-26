@@ -85,10 +85,10 @@ ax.text(8.85, 10.9, r"$D=1{,}792$", ha="right", va="center", fontsize=12, color=
 
 # Residual stream spine.
 ax.plot([1.55, 1.55], [5.45, 10.4], color=green, lw=3)
-ax.text(1.25, 7.93, "residual stream\n" + r"$X^{(\ell)}$",
-        ha="center", va="center", rotation=90, fontsize=12, color=green)
-arrow(ax, 1.55, 10.35, 2.5, 10.05, color=green, lw=2.0)
-arrow(ax, 1.55, 7.75, 2.5, 7.45, color=green, lw=2.0)
+# ax.text(1.25, 7.93, "residual stream\n" + r"$X^{(\ell)}$",
+#         ha="center", va="center", rotation=90, fontsize=12, color=green)
+# arrow(ax, 1.55, 10.35, 2.5, 10.05, color=green, lw=2.0)
+# arrow(ax, 1.55, 7.75, 2.5, 7.45, color=green, lw=2.0)
 
 # Inside one pre-norm block.
 box(ax, 2.45, 9.75, 5.45, 0.52, "RMSNorm", fc=light_gray, ec=gray, fs=12, weight="normal")
@@ -113,10 +113,10 @@ box(ax, 2.25, 4.92, 5.9, 0.55,
     fc=light_green, ec=green, fs=11)
 
 # Side note clarifying residual.
-ax.text(9.45, 8.0,
-        "Residual stream means\naddition around a sublayer,\nnot a layer named “skip”.",
-        ha="left", va="center", fontsize=11, color=green)
-arrow(ax, 9.25, 7.98, 8.15, 7.82, color=green, lw=1.6)
+# ax.text(9.45, 8.0,
+#         "Residual stream means\naddition around a sublayer,\nnot a layer named “skip”.",
+#         ha="left", va="center", fontsize=11, color=green)
+# arrow(ax, 9.25, 7.98, 8.15, 7.82, color=green, lw=1.6)
 
 # Stack continuation and output.
 arrow(ax, 5.0, 5.0, 5.0, 4.55)

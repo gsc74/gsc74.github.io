@@ -103,10 +103,10 @@
 <div class="note">A compact mental model: SFT learns from demonstrations, RLHF learns from human preferences, RLVR learns from checkable correctness, PPO and GRPO are ways to perform reward-driven policy updates, and DPO is a direct preference-pair objective.</div>
 <h2 id="sft">2. Supervised fine-tuning</h2>
 <p>SFT is the clearest place to begin: provide a user question and a high-quality assistant answer, then continue next-token training only on the assistant portion. The model is shown the behavior we want it to imitate.</p>
-<p>For a concrete example, we can form a mix of 1,306,598 examples: 145,819 MetaMathQA, 576,526 Numina, and 584,253 OpenMath; 1,293,798 train examples and 12,800 validation examples total about 572,994,124 tokens. Training can start from the pretrained checkpoint, use maximum length 4,096, and continue for 4 epochs.</p>
+<p>For the student-tutor SFT run, we form a mix of 899,907 examples: 260,085 NuminaMath-CoT, 228,408 OpenMathInstruct-2, 202,618 UltraChat, 109,618 Orca Math, and 99,178 MetaMathQA. The split contains 891,122 train examples and 8,785 validation examples, totaling 403,406,096 formatted tokens with maximum length 4,096. The chat identity is MyLLM, a math and English tutor for students, with assistant-only loss.</p>
 <div class="figure">
 <img src="sft_mix.png" alt="Composition of SFT examples by source">
-<p class="caption">Figure 1. Source composition of the 1.306M-example SFT mixture, shown as both percentage share and exact count.</p>
+<p class="caption">Figure 1. Source composition of the 899,907-example student SFT mixture, combining math reasoning with general chat behavior.</p>
 </div>
 <p>The sequence is bos and system role, system instruction, end and user role, question, end and assistant role, answer, then end and eos. Only assistant tokens contribute to loss: masking the prompt prevents the model from being rewarded for parroting the question. Answers finish in a boxed form so their terminal result is easy to locate.</p>
 <h3>2.1 Assistant-only empirical risk</h3>
@@ -120,7 +120,7 @@
 <h2 id="rlvr">3. GRPO and verifiable rewards</h2>
 <p>RLVR optimizes correctness that a verifier can check, rather than resemblance to a reference solution. For each prompt, sample a group of \(n_{\mathrm{grp}}=48\) completions and assign \(R_i=1\) when the final answer is correct and \(0\) otherwise. The relative advantage is</p>
 <p>\[A_i=\frac{R_i-\mu_R}{\sigma_R+\varepsilon_R}.\]</p>
-<p>For example, we can limit each policy-ratio update to \(1\pm0.2\) and apply a per-token KL penalty of \(0.05\) to discourage drift from a frozen reference. We can use 3 prompts per step, at most 384 generated tokens, temperature 0.9, top-p 0.95, learning rate \(8\times10^{-7}\), and at most 500 steps. Sparse binary reward needs a capable starting policy: if every completion fails, all within-group advantages carry essentially no directional signal.</p>
+<p>For example, we can limit each policy-ratio update to \(1\pm0.2\) and apply a per-token KL penalty to discourage drift from a frozen reference. The student run uses 3 prompts per step, group size 32, at most 384 generated tokens, temperature 0.9, top-p 0.95, learning rate \(7\times10^{-7}\), and up to 700 steps. Sparse binary reward needs a capable starting policy: if every completion fails, all within-group advantages carry essentially no directional signal.</p>
 <h3>3.1 Group-relative estimator</h3>
 <p>For prompt \(x\), sample \(y_i\sim p_{\mathrm{old}}(\cdot\mid x)\) for \(i=1,\ldots,n_{\mathrm{grp}}\). Define</p>
 <p>\[\mu_R=\frac{1}{n_{\mathrm{grp}}}\sum_i R_i,\qquad \sigma_R^2=\frac{1}{n_{\mathrm{grp}}}\sum_i(R_i-\mu_R)^2.\]</p>
@@ -173,6 +173,8 @@
 <a href="https://huggingface.co/datasets/AI-MO/NuminaMath-CoT">NuminaMath-CoT</a>: Apache License 2.0.</li>
 <li>
 <a href="https://huggingface.co/datasets/nvidia/OpenMathInstruct-2">OpenMathInstruct-2</a>: Creative Commons Attribution 4.0.</li>
+<li><a href="https://huggingface.co/datasets/HuggingFaceH4/ultrachat_200k">UltraChat 200k</a> contributes general chat demonstrations.</li>
+<li><a href="https://huggingface.co/datasets/microsoft/orca-math-word-problems-200k">Orca Math word problems</a> contributes student-facing math answers.</li>
 <li>Shao et al., <a href="https://arxiv.org/abs/2402.03300">DeepSeekMath</a>, for Group Relative Policy Optimization.</li>
 <li>Rafailov et al., <a href="https://arxiv.org/abs/2305.18290">Direct Preference Optimization</a>, for DPO.</li>
 <li>Ouyang et al., <a href="https://arxiv.org/abs/2203.02155">Training language models to follow instructions with human feedback</a>, for reward-model-based RLHF.</li>

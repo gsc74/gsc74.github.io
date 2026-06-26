@@ -73,7 +73,7 @@
 
 <p class="nav"><a href="train_index.html">Index</a> · <a href="training/data_prepare_params.html">Data &amp; Parameters</a> · <a href="training/train.html">Training</a> · <a href="training/pretrain.html">Pretraining</a> · <a href="training/fine_tuning.html">Fine-tuning</a> · <a href="training/inference.html">Inference</a></p>
 
-<div class="highlight" id="brief-summary"><strong>In brief</strong><ul><li>Start with documents, train a tokenizer, and choose an architecture whose parameter count, context length, and memory cost satisfy explicit constraints.</li><li>Train the decoder by predicting every next token with cross-entropy, then distribute the same global-batch gradient across 8 GPUs.</li><li>Use SFT to teach response behavior, verifiable-reward RL to optimize checkable correctness, and preference learning to represent human choices.</li><li>At inference, prefill is highly parallel; batch-one decode is commonly limited by HBM bandwidth and KV-cache traffic.</li></ul><p>The worked design has 1,055,231,744 parameters, a 65,536-token vocabulary, an 8,192-token context, and 12.54B tokenizer-derived pretraining tokens.</p></div>
+<div class="highlight" id="brief-summary"><strong>In brief</strong><ul><li>Start with documents, train a tokenizer, and choose an architecture whose parameter count, context length, and memory cost satisfy explicit constraints.</li><li>Train the decoder by predicting every next token with cross-entropy across 8 GPUs at about 216k input tokens/s.</li><li>Use SFT to teach response behavior, verifiable-reward RL to optimize checkable correctness, and preference learning to represent human choices.</li><li>At inference, prefill is highly parallel; batch-one decode is commonly limited by HBM bandwidth and KV-cache traffic.</li></ul><p>The worked design has 1,055,231,744 parameters, a 65,536-token vocabulary, an 8,192-token context, and 27.54B input-token pretraining exposures.</p></div>
 
 <div class="toc">
     <strong>Table of contents</strong>
@@ -97,7 +97,7 @@ makes inference possible is still mostly hidden behind model names, API calls, a
 
 <p>
 This article opens that box. We will ask how text becomes tokens, how tokens become vectors, how attention lets one
-position use another, why prediction error becomes a gradient, why several GPUs must agree on an update, why a
+position use another, why prediction error becomes a gradient, why several GPU workers must agree on an update, why a
 pretrained model still needs fine-tuning, and why generation has different bottlenecks from training. MyLLM gives us a
 concrete model near one billion parameters, large enough to expose real constraints and small enough to calculate.
 </p>
@@ -149,7 +149,7 @@ the cache. The point of an end-to-end treatment is to make these connections exp
     </tr>
     <tr>
         <td><a href="training/pretrain.html">Pretraining</a></td>
-        <td>How can the mathematical objective be optimized efficiently across GPUs?</td>
+        <td>How can the mathematical objective be optimized efficiently across 8 GPUs?</td>
         <td>Data parallelism, global tokens per step, memory constraints, schedules, throughput, and convergence diagnostics.</td>
     </tr>
     <tr>

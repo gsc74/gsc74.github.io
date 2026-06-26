@@ -14,7 +14,7 @@
 <p class="nav">
 <a href="../train_index.html">Index</a> · <a href="data_prepare_params.html">Data &amp; Parameters</a> · <a href="train.html">Training</a> · <a href="pretrain.html">Pretraining</a> · <a href="fine_tuning.html">Fine-tuning</a> · <a href="inference.html">Inference</a>
 </p>
-<div class="highlight" id="brief-summary"><strong>In brief</strong><ul><li>OpenWebMath contributes 6,315,233 documents; MyLLM's tokenizer converts them into 12,540,116,992 tokens.</li><li>Fixing a roughly one-billion-parameter design band leads to \(V=65{,}536\), \(D=1{,}792\), \(L=28\), 14 query heads, 2 KV heads, and \(D_{ff}=4{,}864\).</li><li>Exact accounting gives 117,440,512 embedding parameters and 33,492,480 parameters per block, totaling 1,055,231,744.</li><li>The corpus supplies approximately 59% of the 21.10B-token Chinchilla reference.</li></ul></div>
+<div class="highlight" id="brief-summary"><strong>In brief</strong><ul><li>MyLLM uses a full 27.54B input-token pretraining budget: 12.54B OpenWebMath token exposures plus 15.00B general/educational token exposures.</li><li>Fixing a roughly one-billion-parameter design band leads to \(V=65{,}536\), \(D=1{,}792\), \(L=28\), 14 query heads, 2 KV heads, and \(D_{ff}=4{,}864\).</li><li>Exact accounting gives 117,440,512 embedding parameters and 33,492,480 parameters per block, totaling 1,055,231,744.</li><li>The full input-token exposure is about 130% of the 21.10B-token Chinchilla reference.</li></ul></div>
 <div class="toc">
 <strong>Table of contents</strong>
 <ol>
@@ -308,8 +308,8 @@
 </tr>
 </table>
 <h2 id="data">3. Data sourcing</h2>
-<p>A model learns statistical regularities from examples, so the corpus is its experience rather than a neutral input file. For mathematical language, we want prose, notation, definitions, derivations, and explanations, not merely isolated equations. OpenWebMath provides that mixture in web-scale mathematical text downloaded as parquet shards and streamed during preparation.</p>
-<p>After the purpose is clear, scale becomes meaningful: 6,315,233 documents contain 48.93 GB of raw text and become 12,540,116,992 tokens, or 1,530,776 full sequences. Compact unsigned 16-bit token IDs occupy about 25.08 GB.</p>
+<p>A model learns statistical regularities from examples, so the corpus is its experience rather than a neutral input file. MyLLM uses two pretraining datasets. Pretraining Data 1 is OpenWebMath, which supplies notation, derivations, definitions, and proof-like writing. Pretraining Data 2 is FineWeb-Edu plus Cosmopedia auto_math_text, which adds student-facing English explanations and textbook-like language.</p>
+<p>With the purpose fixed, scale becomes meaningful. Pretraining Data 1 supplies 12,540,182,528 input-token exposures. Pretraining Data 2 supplies 15,000,061,824 input-token exposures from FineWeb-Edu and Cosmopedia auto_math_text. Together, MyLLM receives 27,540,244,352 input-token exposures before fine-tuning.</p>
 <h3>3.1 Corpus as a finite empirical distribution</h3>
 <p>Let the cleaned corpus be \(\mathcal C=\{d_i\}_{i=1}^{n}\), with \(n=6{,}315{,}233\). Tokenization maps each document to a finite sequence,</p>
 <p>\[\tau(d_i)=(x_{i,1},\ldots,x_{i,T_i}),\qquad x_{i,t}\in\{0,\ldots,V-1\}.\]</p>
@@ -494,15 +494,14 @@
 <p>The green arrows therefore mean residual additions. They are sometimes casually called skip connections, but the precise object is the residual stream: a \(D=1{,}792\)-dimensional vector path that carries information through all 28 blocks while each sublayer adds a learned update.</p>
 <p>After the 28th block, a final RMSNorm is applied and the language-model head maps hidden states to vocabulary logits. Weight tying means the same matrix \(E\) used for input embeddings is reused as \(E^\top\) in the output head. This tied head is outside the decoder-block stack; it is not the last decoder layer.</p>
 <h2 id="scaling">7. Scaling laws</h2>
-<p>The compute-optimal analysis of Hoffmann et al. gives a useful rule of thumb of approximately 20 training tokens per parameter <a href="#ref-chinchilla">[2]</a>:</p>
+<p>The compute-optimal analysis of Hoffmann et al. gives a useful rule of thumb of approximately 20 training tokens per parameter <a href="#ref-chinchilla">[3]</a>:</p>
 <p>\[1.055\times10^9\times20\approx21.1\times10^9\text{ tokens}.\]</p>
-<p>Where does the comparison value \(12.5\times10^9\) come from? <a href="https://arxiv.org/abs/2310.06786">OpenWebMath</a> supplies 6,315,233 mathematical web documents <a href="#ref-openwebmath">[1]</a>. After those documents are encoded with MyLLM's byte-level BPE tokenizer, they contain exactly 12,540,116,992 tokens. Token counts are tokenizer-dependent: the OpenWebMath paper reports 14.7B tokens under its own tokenization, while \(12.54\)B is the count that determines the number of MyLLM training sequences and optimizer steps.</p>
-<p>We can therefore compare the available corpus with the scaling-law target:</p>
-<p>\[\frac{12.540\times10^9}{21.105\times10^9}\approx0.594.\]</p>
-<p>The corpus supplies about 59% of the compute-optimal token estimate, so this configuration is undertrained relative to that rule of thumb. A deployment-focused design can instead train beyond the compute-optimal point because additional one-time training may improve the capability of a smaller, less expensive inference model.</p>
+<p>The comparison value is now the full MyLLM input-token exposure: 12.54B tokens from Pretraining Data 1 plus 15.00B tokens from Pretraining Data 2, or 27.54B input tokens total. Across the full pretraining plan, throughput averaged about 216k input tokens/s on 8 GPUs.</p>
+<p>\[\frac{27.540\times10^9}{21.105\times10^9}\approx1.30.\]</p>
+<p>The full pretraining plan therefore supplies about 130% of the compute-optimal token estimate for a 1.055B-parameter model. This moves the model from undertrained relative to the rule of thumb to modestly over that reference, with the added benefit that the extra tokens broaden English and tutoring behavior.</p>
 <div class="figure">
-<img src="token_budget.png" alt="Comparison of 12.54 billion tokenizer-derived training tokens and a 21.10 billion Chinchilla estimate">
-<p class="caption">Figure 3. Tokenizing OpenWebMath with MyLLM's tokenizer yields 12.54B tokens, approximately 59% of the 21.10B-token scaling-law reference.</p>
+<img src="token_budget.png" alt="Comparison of 27.54 billion input-token exposures and a 21.10 billion Chinchilla estimate">
+<p class="caption">Figure 3. The full MyLLM pretraining budget exposes the model to 27.54B input tokens, about 130% of the 21.10B-token scaling-law reference.</p>
 </div>
 <h2 id="references">8. References and licensing</h2>
 <ul class="refs">
