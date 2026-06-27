@@ -103,10 +103,10 @@
 <div class="note">A compact mental model: SFT learns from demonstrations, RLHF learns from human preferences, RLVR learns from checkable correctness, PPO and GRPO are ways to perform reward-driven policy updates, and DPO is a direct preference-pair objective.</div>
 <h2 id="sft">2. Supervised fine-tuning</h2>
 <p>SFT is the clearest place to begin: provide a user question and a high-quality assistant answer, then continue next-token training only on the assistant portion. The model is shown the behavior we want it to imitate.</p>
-<p>For the student-tutor SFT run, we form a mix of 899,907 examples: 260,085 NuminaMath-CoT, 228,408 OpenMathInstruct-2, 202,618 UltraChat, 109,618 Orca Math, and 99,178 MetaMathQA. The split contains 891,122 train examples and 8,785 validation examples, totaling 403,406,096 formatted tokens with maximum length 4,096. The chat identity is MyLLM, a math and English tutor for students, with assistant-only loss.</p>
+<p>For the SFT run, we form a mix of 899,907 examples: 260,085 NuminaMath-CoT, 228,408 OpenMathInstruct-2, 202,618 UltraChat, 109,618 Orca Math, and 99,178 MetaMathQA. The split contains 891,122 train examples and 8,785 validation examples, totaling 403,406,096 formatted tokens with maximum length 4,096. The chat identity is MyLLM, a math and English tutor for students, with assistant-only loss.</p>
 <div class="figure">
 <img src="sft_mix.png" alt="Composition of SFT examples by source">
-<p class="caption">Figure 1. Source composition of the 899,907-example student SFT mixture, combining math reasoning with general chat behavior.</p>
+<p class="caption">Figure 1. Source composition of the 899,907-example SFT mixture, combining math reasoning with general chat behavior.</p>
 </div>
 <p>The sequence is bos and system role, system instruction, end and user role, question, end and assistant role, answer, then end and eos. Only assistant tokens contribute to loss: masking the prompt prevents the model from being rewarded for parroting the question. Answers finish in a boxed form so their terminal result is easy to locate.</p>
 <h3>2.1 Assistant-only empirical risk</h3>
@@ -118,9 +118,9 @@
 <p>\[\widehat R_{\mathrm{SFT}}(\theta)=\sum_s w_s\,\mathbb E_{x\sim\widehat{\mathcal D}_s}[\mathcal L_{\mathrm{SFT}}(x;\theta)],\qquad \sum_s w_s=1.\]</p>
 <p>Raw source counts implicitly determine \(w_s\) under uniform example sampling. Explicit reweighting changes the optimized distribution even if the underlying examples are unchanged.</p>
 <h2 id="rlvr">3. GRPO and verifiable rewards</h2>
-<p>RLVR optimizes correctness that a verifier can check, rather than resemblance to a reference solution. For each prompt, sample a group of \(n_{\mathrm{grp}}=48\) completions and assign \(R_i=1\) when the final answer is correct and \(0\) otherwise. The relative advantage is</p>
+<p>RLVR optimizes correctness that a verifier can check, rather than resemblance to a reference solution. For each prompt, sample a group of \(n_{\mathrm{grp}}\) completions and assign \(R_i=1\) when the final answer is correct and \(0\) otherwise. The relative advantage is</p>
 <p>\[A_i=\frac{R_i-\mu_R}{\sigma_R+\varepsilon_R}.\]</p>
-<p>For example, we can limit each policy-ratio update to \(1\pm0.2\) and apply a per-token KL penalty to discourage drift from a frozen reference. The student run uses 3 prompts per step, group size 32, at most 384 generated tokens, temperature 0.9, top-p 0.95, learning rate \(7\times10^{-7}\), and up to 700 steps. Sparse binary reward needs a capable starting policy: if every completion fails, all within-group advantages carry essentially no directional signal.</p>
+<p>For example, we can limit each policy-ratio update to \(1\pm0.2\) and apply a per-token KL penalty to discourage drift from a frozen reference. Sparse binary reward needs a capable starting policy: if every completion fails, all within-group advantages carry essentially no directional signal.</p>
 <h3>3.1 Group-relative estimator</h3>
 <p>For prompt \(x\), sample \(y_i\sim p_{\mathrm{old}}(\cdot\mid x)\) for \(i=1,\ldots,n_{\mathrm{grp}}\). Define</p>
 <p>\[\mu_R=\frac{1}{n_{\mathrm{grp}}}\sum_i R_i,\qquad \sigma_R^2=\frac{1}{n_{\mathrm{grp}}}\sum_i(R_i-\mu_R)^2.\]</p>
@@ -132,7 +132,7 @@
 <p>\[\mathcal J_{\mathrm{GRPO}}(\theta)=\frac{1}{n_{\mathrm{grp}}}\sum_i\frac{1}{|y_i|}\sum_t\min\!\left(\rho_{i,t}A_i,\operatorname{clip}(\rho_{i,t},1-\epsilon_{\mathrm{clip}},1+\epsilon_{\mathrm{clip}})A_i\right)-\lambda_{\mathrm{KL}}D_{\mathrm{KL}}(p_\theta(\cdot\mid x)\Vert p_{\mathrm{ref}}(\cdot\mid x)).\]</p>
 <p>Clipping limits the incentive for a single batch to move the policy far from the sampling policy. The KL term limits drift from the frozen reference. With \(\epsilon_{\mathrm{clip}}=0.2\) and \(\lambda_{\mathrm{KL}}=0.05\), the two controls address different failure modes: stale-sample instability and global policy drift.</p>
 <h2 id="rlhf">4. RLHF and preference learning</h2>
-<p>Classical RLHF learns a scalar preference reward and optimizes it with PPO. DPO instead learns directly from 73,874 chosen/rejected pairs for 1 epoch with \(\beta_{\mathrm{DPO}}=0.1\). Its sketch is</p>
+<p>Classical RLHF learns a scalar preference reward and optimizes it with PPO. DPO instead learns directly from chosen/rejected preference pairs. Its sketch is</p>
 <p>\[\mathcal L_{\mathrm{DPO}}=-\log\sigma\!\left(\beta_{\mathrm{DPO}}\left[\log\frac{p_\theta(y^+\mid x)}{p_{\mathrm{ref}}(y^+\mid x)}-\log\frac{p_\theta(y^-\mid x)}{p_{\mathrm{ref}}(y^-\mid x)}\right]\right).\]</p>
 <h3>4.1 Reward-model-based RLHF</h3>
 <p>Given prompt \(x\), preferred response \(y^+\), and rejected response \(y^-\), a Bradley-Terry reward model assumes</p>
